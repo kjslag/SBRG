@@ -1108,6 +1108,7 @@ main = do
             ++ " {max RG terms = " ++ max_rg_terms_default ++ "} {max wolff terms = " ++ max_wolff_terms_default ++ "}"
     putStr   $ "available models: "
     print    $ enumFrom $ (toEnum 0 :: Model)
+    putStrLn $ "example: SBRG 0 Ising [6] [1,1,1] 1"
     exitFailure
   
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]

@@ -16,7 +16,7 @@
 -- +RTS -xc -sstderr -p              -N4
 
 import GHC.Prim (reallyUnsafePtrEquality#)
-import GHC.Exts (sortWith, the)
+import GHC.Exts (groupWith, sortWith, the)
 
 import Control.Monad
 import qualified Control.Monad.ST as ST
@@ -424,7 +424,7 @@ instance Ord AbsF where
 data Sigma = Sigma {
   ik'G   :: !(IntMap Int),
   iD'G   :: !Int,
-  meta'G :: !SigmaMeta,
+  meta'G :: !Meta'G,
   hash'G ::  Word } -- TODO use a hash that can be calculated easily by multSigma
 
 sigma :: Int -> IntMap Int -> Sigma
@@ -744,6 +744,7 @@ data RG = RG {
   stab0'RG           :: ![SigmaTerm],      -- stabilizers in new basis
   stab1'RG           :: ![SigmaTerm],      -- stabilizers in current basis
   stab'RG            ::  Ham,              -- stabilizers in old basis
+  meta'RG            :: !Meta'RG,
   max_rg_terms'RG    :: !(Maybe Int),
   max_wolff_terms'RG :: !(Maybe Int)}
 
@@ -768,11 +769,11 @@ wolff_errors'RG = map (rss . map snd . fst) . rights . g4_H0Gs'RG
 
 init'RG :: Ham -> RG
 init'RG ham = rg
-  where rg  = RG ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromList [0..(n'Ham ham - 1)]) [] [] [] (Just []) [] [] (stabilizers rg) Nothing Nothing
+  where rg  = RG ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromList [0..(n'Ham ham - 1)]) [] [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
-rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 stab1 _ max_rg_terms _)
+rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 stab1 _ _ max_rg_terms _)
   | IntSet.null unusedIs = rg
   | otherwise            = force'RG rg'
   where
@@ -845,7 +846,8 @@ rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 
               trash'RG          = (trash':) <$> trash,
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
-              stab'RG           = stabilizers rg'}
+              stab'RG           = stabilizers rg',
+              meta'RG           = update_meta'RG rg rg'}
     
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = iD'G g == 0 && isDiag' g
@@ -987,13 +989,6 @@ init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ conc
                                 $ flip State.evalState (randoms seed) $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
 
--- init_maj :: Sigma -> Sigma
--- init_maj g | not use_majQ = g
---            | otherwise    =
---   case IntMap.toList $ ik'G g of
---     [[_,k],[_,k']] | k == k' -> undefined
---     _                      -> error "init_maj"
-
 data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | ToricCode | Z2Gauge
   deriving (Eq, Show, Read, Enum)
 
@@ -1078,35 +1073,51 @@ model_gen _ _ _ = error "model_gen"
 model_gen_apply_gamma :: Double -> ([Int],ModelGen) -> ([Int],ModelGen)
 model_gen_apply_gamma gamma (ls,gen) = (ls, mapFst (map $ mapSnd $ gamma==0 ? (boole . (/=0)) $ (`powF` gamma)) .* gen)
 
+-- [bins (upper bound)] -> [(bin,x)] -> [(bin,xs)]
 generic_histo_ :: [Int] -> [(Int,a)] -> [(Int,[a])]
 generic_histo_ xs = IntMap.toList . foldl'
                       (\hist (x,y) -> (flip $ IntMap.alter $ Just . (y:) . fromJust) hist
                                       $ fst $ fromJust $ IntMap.lookupGE x hist)
                       (IntMap.fromListWith undefined $ map (,[]) xs)
 
--- SigmaMeta data
+-- Meta'G & Meta'RG data
 
-default_meta'G :: SigmaMeta
-set_maj'G :: [Int] -> Sigma -> Sigma
-get_maj'G :: Sigma -> IntSet
-merge_meta'G :: SigmaMeta -> SigmaMeta -> SigmaMeta
+default_meta'G :: Meta'G
+merge_meta'G   :: Meta'G -> Meta'G -> Meta'G
+has_majQ       :: Bool
+set_maj'G      :: [Int] -> Sigma -> Sigma
+init_meta'RG   :: RG -> Meta'RG
+update_meta'RG :: RG -> RG -> Meta'RG
 
-type SigmaMeta = ()
+type Meta'G    = ()
 default_meta'G = ()
-set_maj'G _    = id
-get_maj'G      = undefined
 merge_meta'G   = const
+has_majQ       = False
+set_maj'G _    = id
+type Meta'RG   = ()
+init_meta'RG   = const ()
+update_meta'RG = const . meta'RG
 
--- type SigmaMeta  = IntSet
--- default_meta'G  = IntSet.empty
--- set_maj'G maj g = g { meta'G = IntSet.fromList maj}
--- get_maj'G       = meta'G
--- merge_meta'G    = xor'IntSet
+-- type Meta'G           = IntSet
+-- default_meta'G        = IntSet.empty
+-- merge_meta'G          = xor'IntSet
+-- has_majQ              = True
+-- set_maj'G maj g       = g { meta'G = IntSet.fromList maj}
+-- type Meta'RG          = [MajHisto] -- [RG step -> [(# majorana, [coefficients])]]
+-- init_meta'RG rg       = [calc_majHisto rg]
+-- update_meta'RG rg rg' = calc_majHisto rg' : meta'RG rg
+
+-- MajHisto
+
+type MajHisto = [(Int,[F])]
+
+calc_majHisto :: RG -> MajHisto
+calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (mapFst $ IntSet.size . meta'G) . Map.toList . gc'Ham . ham'RG
 
 -- float type
 
-toF    :: Double -> F
 type_F :: String
+toF    :: Double -> F
 powF   :: F -> Double -> F -- preserves sign of base
 logF   :: F -> Double
 
@@ -1126,9 +1137,6 @@ logF   = log'LF
 
 prettyPrint :: Bool
 prettyPrint = False
-
-use_majQ :: Bool
-use_majQ = False
 
 main :: IO ()
 main = do
@@ -1172,7 +1180,7 @@ main = do
   
   unless (0 < n) $ error "ln2_ls"
   
-  putStr "version:            "; print (160324.0 :: Double) -- year month day . minor
+  putStr "version:            "; putStrLn "160403.0" -- year month day . minor
   putStr "model:              "; print $ show model
   putStr "Ls:                 "; print ls0
   putStr "couplings:          "; print couplings
@@ -1263,6 +1271,10 @@ main = do
 --  all_histos "c4 ham0"         (log_ns     , log_ns     ) log_ns         $ Map.toList  $  gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
+  
+  when has_majQ $ do
+    putStr "majorana histo: "
+    print $ cut_pow2 $ meta'RG rg
   
   when calc_EEQ $ do
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]

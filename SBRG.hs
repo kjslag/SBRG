@@ -1,3 +1,8 @@
+-- TODO
+-- count higher order terms by keeping track of set of majorana operators
+-- then look at flow of these terms, and also try cutting out interaction n>=6 terms
+-- also use Z_2^2 symmetry to make ED faster
+
 -- ghci -fbreak-on-error
 -- :set -fbreak-on-error
 -- :set args 1 XYZ [4] [1,1,1] 1
@@ -198,6 +203,9 @@ intUnion = IntSet.toList . IntSet.fromList
 
 unions :: Eq a => [[a]] -> [a]
 unions = foldl' union []
+
+xor'IntSet :: IntSet -> IntSet -> IntSet
+xor'IntSet x y = IntSet.union x y `IntSet.difference` IntSet.intersection x y
 
 mergeUsing :: (a -> a -> a) -> a -> [a] -> a
 mergeUsing f x_ xs_ = merge $ x_:xs_
@@ -416,10 +424,11 @@ instance Ord AbsF where
 data Sigma = Sigma {
   ik'G   :: !(IntMap Int),
   iD'G   :: !Int,
+  meta'G :: !SigmaMeta,
   hash'G ::  Word } -- TODO use a hash that can be calculated easily by multSigma
 
 sigma :: Int -> IntMap Int -> Sigma
-sigma iD ik  = Sigma ik iD $ calc_hash'G ik iD
+sigma iD ik  = Sigma ik iD default_meta'G $ calc_hash'G ik iD
 
 calc_hash'G :: IntMap Int -> Int -> Word
 calc_hash'G ik iD = mult*fromIntegral iD + IntMap.foldrWithKey' (\i k hash' -> hash' + (fromIntegral k) * bit (mod (2*i) n)) 0 ik
@@ -430,15 +439,15 @@ set_iD'G :: Int -> Sigma -> Sigma
 set_iD'G iD g = g { iD'G = iD, hash'G = calc_hash'G (ik'G g) iD }
 
 instance Eq Sigma where
-  Sigma g1 iD1 hash1 == Sigma g2 iD2 hash2 = hash1==hash2 && iD1==iD2 && (ptrEquality g1 g2 || g1==g2)
+  Sigma g1 iD1 _ hash1 == Sigma g2 iD2 _ hash2 = hash1==hash2 && iD1==iD2 && (ptrEquality g1 g2 || g1==g2)
 
 instance Ord Sigma where
-  Sigma g1 iD1 hash1 `compare` Sigma g2 iD2 hash2 =
+  Sigma g1 iD1 _ hash1 `compare` Sigma g2 iD2 _ hash2 =
       compare hash1 hash2 <> compare iD1 iD2 <> (ptrEquality g1 g2 ? EQ $ compare' g1 g2)
     where compare' x y = compare x y
 
 instance Show Sigma where
-  showsPrec n (Sigma g _ _) = showsPrec n $ IntMap.toList g
+  showsPrec n g = showsPrec n $ IntMap.toList $ ik'G g
 
 type SigmaTerm = (Sigma, F)
 
@@ -502,7 +511,7 @@ multSigma1 0 k = ( 0,k)
 multSigma1 _ _ = error "multSigma1"
 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
-multSigma (Sigma g1 iD1 _) (Sigma g2 iD2 _) = (n, g')
+multSigma (Sigma g1 iD1 meta1 _) (Sigma g2 iD2 meta2 _) = (n, g' {meta'G = merge_meta'G meta1 meta2})
   where n  = IntMap.foldl' (+) 0 $ intersectionWith' (fst .* multSigma1) g1 g2 -- TODO implement IntMap.foldIntersectionWith
         g' = sigma iD $ IntMap.mergeWithKey (\_ k1 k2 -> justIf (/=0) $ snd $ multSigma1 k1 k2) id id g1 g2
         iD | iD2==0 || iD1==iD2 = iD1
@@ -971,31 +980,38 @@ xs_i :: [Int] -> Int -> [Int]
 xs_i ls i0 = map snd $ init $ scanr (\l (i,_) -> divMod i l) (i0,0) ls
 
 -- site -> randoms -> (SigmaTerms, unused_randoms)
-type ModelGen = [Int] -> [F] -> ([([([Int],Int)],F)], [F])
+type ModelGen = [Int] -> [F] -> ([SigmaTerm], [F])
 
 init_generic'Ham :: Int -> ([Int],ModelGen) -> Ham
-init_generic'Ham seed (ls,model) = fromLists'Ham ls 0 $ mapMaybe f $ concat
+init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ concat
                                 $ flip State.evalState (randoms seed) $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
-  where f :: ([([Int],Int)],F) -> Maybe ([(Int,Int)],F)
-        f (_,0) = Nothing
-        f (g,c) = Just (flip map g $ mapFst $ i_xs ls, c)
+
+-- init_maj :: Sigma -> Sigma
+-- init_maj g | not use_majQ = g
+--            | otherwise    =
+--   case IntMap.toList $ ik'G g of
+--     [[_,k],[_,k']] | k == k' -> undefined
+--     _                      -> error "init_maj"
 
 data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | ToricCode | Z2Gauge
   deriving (Eq, Show, Read, Enum)
+
+basic_gen :: [Int] -> ([([([Int],Int)],F)],a) -> ([SigmaTerm],a)
+basic_gen ls (gs,rs) = ([fromList'GT 0 ([(i_xs ls xs,k) | (xs,k) <- g],c) | (g,c) <- gs], rs)
 
 model_gen :: Model -> [Int] -> [F] -> ([Int],ModelGen)
 model_gen RandFerm ls [p] = (ls, gen)
   where n          = product ls
         gen [0] rs = foldl' gen' ([],rs) $
-                       [ [([x],3)] | x <- [0..n-1] ] ++
-                       [ [([x1],k1),([x2],k2)] ++ [([x],3) | x <- [x1+1..x2-1]] |
+                       [ [(x,3)] | x <- [0..n-1] ] ++
+                       [ [(x1,k1),(x2,k2)] ++ [(x,3) | x <- [x1+1..x2-1]] |
                          x1 <- [0..n-1], x2 <- [x1+1..n-1], k1 <- [1,2], k2 <- [1,2]]
         gen [_] rs = ([], rs)
         gen  _  _  = error "model_gen RandFerm"
-        gen' (terms,rp:rh:rs') g = (if' (rp<p) [(g,rh)] [] ++ terms, rs')
+        gen' (terms,rp:rh:rs') g = (if' (rp<p) [fromList'GT 0 (g,rh)] [] ++ terms, rs')
         gen' _                 _ = error "model_gen RandFerm gen'"
-model_gen Ising ls [j,k,h] = (ls, gen)
+model_gen Ising ls [j,k,h] = (ls, basic_gen ls .* gen)
   where (kj,kh) = (3,1)
         gen [x] (rj:rk:rh:rs) =
           ([ ([([x],kj),([x+1],kj)],j*rj), ([([x],kh),([x+1],kh)],k*rk), ([([x],kh)],h*rh) ], rs)
@@ -1005,9 +1021,11 @@ model_gen Ising ls [j,k,h] = (ls, gen)
         gen _ _ = error "model_gen Ising"
 model_gen XYZ ls j = (ls, gen)
   where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
-          ([ ([([x],1+k),([x+1],k+1)], j!!k * r!!k) | k<-[0..2]], rs)
+          ([ set_maj'G (maj x k) & mapFst $ fromList'GT 0 ([(i_xs ls [x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3]], rs)
         gen _ _ = error "model_gen XYZ"
-model_gen XYZ2 ls js | length js == 3*3 = (ls, gen) -- [jx,jy,jz,jx2,jy2,jz2,jx',jy',jz']
+        maj x 3 = maj x 1 ++ maj x 2
+        maj x k = let b = boole (even x == (k==2)) in [2*x+b,2*(x+1)+b]
+model_gen XYZ2 ls js | length js == 3*3 = (ls, basic_gen ls .* gen) -- [jx,jy,jz,jx2,jy2,jz2,jx',jy',jz']
   where gen [x] rs_ = let [j,j2,j'] = partitions 3 js
                           ([r,r2,r'],rs) = mapFst (partitions 3) $ splitAt (3*3) rs_ in
           (concat [concat [
@@ -1028,8 +1046,8 @@ model_gen XYZ2 ls [jx,jy,jz] = model_gen XYZ2 ls [jx,jy,jz,0.1,0,0,0,0,0]
 --         gen [_,7,_] _  = error "model_gen MajChain 7"
 --         gen [_,_,_] rs = ([], rs)
 --         gen _ _ = error "model_gen MajChain"
-model_gen MajChain [lx] [t,   g   ] = model_gen MajChain [lx] [t,t,g,g]
-model_gen MajChain [lx] [t,t',g,g'] = ([lx], gen)
+model_gen MajChain ls [t,   g   ] = model_gen MajChain ls [t,t,g,g]
+model_gen MajChain ls [t,t',g,g'] = (ls, basic_gen ls .* gen)
   where (kt,kt') = (3,1) -- corr_z_xs_ggs depends on this
         gen [x] (rt:rt':rg:rg':rs) =
           ([  ([([x],kt )            ],  t *rt ),
@@ -1038,14 +1056,14 @@ model_gen MajChain [lx] [t,t',g,g'] = ([lx], gen)
               ([([x],kt'),([x+2],kt')],  g'*rg')
             ], rs)
         gen _ _ = error "model_gen MajChain"
-model_gen ToricCode ls [a,b',b,a'] = (ls++[2], gen)
+model_gen ToricCode ls [a,b',b,a'] = (ls++[2], basic_gen ls .* gen)
   where (ka,kb) = (3,1)
         gen [x,y,0] (ra:rb:ra'1:ra'2:rb'1:rb'2:rs) =
           ([ ([([x,y,1],ka),([x+1,y,2],ka),([x,y+1,1],ka),([x,y,2],ka)],a*ra), ([([x,y,1],kb)],b'*rb'1), ([([x,y,2],kb)],b'*rb'2),
              ([([x,y,1],kb),([x-1,y,1],kb),([x,y-1,2],kb),([x,y,2],kb)],b*rb), ([([x,y,1],ka)],a'*ra'1), ([([x,y,2],ka)],a'*ra'2)], rs)
         gen [_,_,1] rs = ([],rs)
         gen _       _  = error "model_gen ToricCode"
-model_gen Z2Gauge ls [a,b',b,a'] = (ls++[3], gen)
+model_gen Z2Gauge ls [a,b',b,a'] = (ls++[3], basic_gen ls .* gen)
   where (ka,kb,kA,kB) = (3,1,3,1)
         c = sum $ map abs $ [a,b',b,a']
         gen [x,y,0] (ra:rb:ra'1:ra'2:rb'1:rb'2:rs) =
@@ -1066,6 +1084,27 @@ generic_histo_ xs = IntMap.toList . foldl'
                                       $ fst $ fromJust $ IntMap.lookupGE x hist)
                       (IntMap.fromListWith undefined $ map (,[]) xs)
 
+-- SigmaMeta data
+
+default_meta'G :: SigmaMeta
+set_maj'G :: [Int] -> Sigma -> Sigma
+get_maj'G :: Sigma -> IntSet
+merge_meta'G :: SigmaMeta -> SigmaMeta -> SigmaMeta
+
+type SigmaMeta = ()
+default_meta'G = ()
+set_maj'G _    = id
+get_maj'G      = undefined
+merge_meta'G   = const
+
+-- type SigmaMeta  = IntSet
+-- default_meta'G  = IntSet.empty
+-- set_maj'G maj g = g { meta'G = IntSet.fromList maj}
+-- get_maj'G       = meta'G
+-- merge_meta'G    = xor'IntSet
+
+-- float type
+
 toF    :: Double -> F
 type_F :: String
 powF   :: F -> Double -> F -- preserves sign of base
@@ -1083,11 +1122,13 @@ toF    = fromDouble'LF
 powF   = pow'LF
 logF   = log'LF
 
+-- main
+
 prettyPrint :: Bool
 prettyPrint = False
 
--- test_ham :: Ham
--- test_ham = fromLists'Ham [2] 0 [([(0,3)],4), ([(0,1)],3), ([(0,1),(1,3)],2), ([(0,3),(1,3)],1)] 
+use_majQ :: Bool
+use_majQ = False
 
 main :: IO ()
 main = do
@@ -1108,6 +1149,7 @@ main = do
             ++ " {max RG terms = " ++ max_rg_terms_default ++ "} {max wolff terms = " ++ max_wolff_terms_default ++ "}"
     putStr   $ "available models: "
     print    $ enumFrom $ (toEnum 0 :: Model)
+    putStrLn $ "example: SBRG 0 Ising [6] [1,1,1] 1"
     exitFailure
   
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]

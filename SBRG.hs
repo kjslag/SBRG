@@ -1082,37 +1082,46 @@ generic_histo_ xs = IntMap.toList . foldl'
 
 -- Meta'G & Meta'RG data
 
-default_meta'G :: Meta'G
-merge_meta'G   :: Meta'G -> Meta'G -> Meta'G
-has_majQ       :: Bool
-set_maj'G      :: [Int] -> Sigma -> Sigma
-init_meta'RG   :: RG -> Meta'RG
-update_meta'RG :: RG -> RG -> Meta'RG
+default_meta'G   :: Meta'G
+merge_meta'G     :: Meta'G -> Meta'G -> Meta'G
+init_meta'RG     :: RG -> Meta'RG
+update_meta'RG   :: RG -> RG -> Meta'RG
+--
+has_majQ         :: Bool
+set_maj'G        :: [Int] -> Sigma -> Sigma
+get_maj'G        :: Sigma -> IntSet
+get_majHistos'RG :: RG -> [MajHisto]
 
-type Meta'G    = ()
-default_meta'G = ()
-merge_meta'G   = const
-has_majQ       = False
-set_maj'G _    = id
-type Meta'RG   = ()
-init_meta'RG   = const ()
-update_meta'RG = const . meta'RG
+type Meta'G      = ()
+default_meta'G   = ()
+merge_meta'G     = const
+type Meta'RG     = ()
+init_meta'RG     = const ()
+update_meta'RG   = const . meta'RG
+--
+has_majQ         = False
+set_maj'G _      = id
+get_maj'G        = undefined
+get_majHistos'RG = undefined
 
 -- type Meta'G           = IntSet
 -- default_meta'G        = IntSet.empty
 -- merge_meta'G          = xor'IntSet
--- has_majQ              = True
--- set_maj'G maj g       = g { meta'G = IntSet.fromList maj}
 -- type Meta'RG          = [MajHisto] -- [RG step -> [(# majorana, [coefficients])]]
 -- init_meta'RG rg       = [calc_majHisto rg]
 -- update_meta'RG rg rg' = calc_majHisto rg' : meta'RG rg
+-- --
+-- has_majQ              = True
+-- set_maj'G maj g       = g { meta'G = IntSet.fromList maj}
+-- get_maj'G             = meta'G
+-- get_majHistos'RG      = meta'RG
 
 -- MajHisto
 
 type MajHisto = [(Int,[F])]
 
 calc_majHisto :: RG -> MajHisto
-calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (mapFst $ IntSet.size . meta'G) . Map.toList . gc'Ham . ham'RG
+calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (mapFst $ IntSet.size . get_maj'G) . Map.toList . gc'Ham . ham'RG
 
 -- float type
 
@@ -1274,7 +1283,7 @@ main = do
   
   when has_majQ $ do
     putStr "majorana histo: "
-    print $ cut_pow2 $ meta'RG rg
+    print $ cut_pow2 $ get_majHistos'RG rg
   
   when calc_EEQ $ do
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]

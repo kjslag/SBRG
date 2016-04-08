@@ -438,6 +438,9 @@ calc_hash'G ik iD = mult*fromIntegral iD + IntMap.foldrWithKey' (\i k hash' -> h
 set_iD'G :: Int -> Sigma -> Sigma
 set_iD'G iD g = g { iD'G = iD, hash'G = calc_hash'G (ik'G g) iD }
 
+set_meta'G :: Meta'G -> Sigma -> Sigma
+set_meta'G meta g = g { meta'G = meta }
+
 instance Eq Sigma where
   Sigma g1 iD1 _ hash1 == Sigma g2 iD2 _ hash2 = hash1==hash2 && iD1==iD2 && (ptrEquality g1 g2 || g1==g2)
 
@@ -739,7 +742,6 @@ data RG = RG {
   unusedIs'RG        :: !IntSet,
   g4_H0Gs'RG         :: ![G4_H0G],
   offdiag_errors'RG  :: ![F],
-  wolff2_errors'RG   :: ![F],
   trash'RG           :: !(Maybe [[SigmaTerm]]),
   stab0'RG           :: ![SigmaTerm],      -- stabilizers in new basis
   stab1'RG           :: ![SigmaTerm],      -- stabilizers in current basis
@@ -769,13 +771,13 @@ wolff_errors'RG = map (rss . map snd . fst) . rights . g4_H0Gs'RG
 
 init'RG :: Ham -> RG
 init'RG ham = rg
-  where rg  = RG ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromList [0..(n'Ham ham - 1)]) [] [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
+  where rg  = RG ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
-rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 stab1 _ _ max_rg_terms _)
+rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 stab1 _ _ max_rg_terms _)
   | IntSet.null unusedIs = rg
-  | otherwise            = force'RG rg'
+  | otherwise            = force'RG $ update_meta'RG rg rg'
   where
     _G1           :: [(SigmaTerm,SigmaTerm)] -- [(icomm g3' gT/h3', -gT)] where gT is in Sigma
     _G2, _G3, _G4 :: [SigmaTerm]
@@ -788,9 +790,9 @@ rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 
     i3        = fst $ maximumBy (comparing snd) $ (\is -> zip is $ modDifferences (n'Ham ham1) is) -- TODO 1d only
               $ IntMap.keys $ IntMap.intersection (ik'G g3) unusedIs_
     unusedIs' = IntSet.delete i3 unusedIs
-    g3'       = sigma 0 $ IntMap.singleton i3 3
+    g3'       = set_meta'G (meta'G g3) $ sigma 0 $ IntMap.singleton i3 3
   --g3'       = sigma 0 $ IntMap.insertWith (error "g3'") i3 3 $ IntMap.difference (ik'G g3) unusedIs_
-    g4s_      = find_G4s g3 g3'
+    g4s_      = map g4s_meta'G $ find_G4s g3 g3'
     c4_ham0'  = c4s'Ham 1 g4s_ c4_ham0
     g4_H0Gs'  = Right (sort'GT $ map fst _G1, i3) : map Left (reverse g4s_)
     
@@ -807,14 +809,8 @@ rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 
                     -- [Sigma, Delta]
     _G_Delta         = [(icomm'Ham (g,1) ham3', c) | (g,c) <- map fst _G1]
                        where ham3' = delete'Ham g3' ham3
-                    -- calc offdiag and wolff2 error
+                    -- calc offdiag error
     offdiag_error    = (/abs h3') $ maximum $ (0:) $ map (abs . snd) $ concat $ map fst _G_Delta
-    wolff2_error     = (rss $ map snd $ Map.toList $ fromList'MapGT $ concat $ map (\(gs,c) -> map (scale'GT c) gs) _G_Delta)
-                     / (rss $ map (snd . snd) _G1)
---     offdiag_error    = maximum $ 0:[ abs $ snd gT'
---                                    | g   <- map (fst . snd) _G1,
---                                      gT' <- icomm'Ham (g,1/h3') ham3']
---                        where ham3' = delete'Ham g3' ham3
                     -- remove diagonal matrices from ham
     ham4             = flip deleteSigmas'Ham ham3 $ map fst diag'
                     -- distribute _G1
@@ -842,12 +838,10 @@ rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 
               unusedIs'RG       = unusedIs',
               g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
               offdiag_errors'RG = offdiag_error : offdiag_errors,
-            --wolff2_errors'RG  = wolff2_error  : wolff2_errors,
               trash'RG          = (trash':) <$> trash,
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
-              stab'RG           = stabilizers rg',
-              meta'RG           = update_meta'RG rg rg'}
+              stab'RG           = stabilizers rg'}
     
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = iD'G g == 0 && isDiag' g
@@ -856,10 +850,6 @@ rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors _ trash stab0 
     find_G4s :: Sigma -> Sigma -> [Sigma]
     find_G4s g0 g1 = maybe (g0 == g1 ? [] $ find_G4s g_ g1 ++ find_G4s g0 g_) (replicate 1 . fst) $ icomm g0 g1
       where g_ = sigma 0 $ IntMap.singleton i3 1
---       where (i0s,i1s) = mapBoth (IntSet.intersection unusedIs . IntMap.keysSet . ik'G) (g0,g1)
---             i01s      = IntSet.intersection i0s i1s
---             is        = map IntSet.findMin $ IntSet.null i01s ? [i0s,i1s] $ [i01s]
---             g_        = sigma 0 $ IntMap.fromListWith (error "find_G4s") $ [(i, head $ [1,2,3] \\ map (IntMap.findWithDefault 0 i . ik'G) [g0,g1]) | i <- is]
 
 stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
@@ -1019,7 +1009,7 @@ model_gen XYZ ls j = (ls, gen)
           ([ set_maj'G (maj x k) & mapFst $ fromList'GT 0 ([(i_xs ls [x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3]], rs)
         gen _ _ = error "model_gen XYZ"
         maj x 3 = maj x 1 ++ maj x 2
-        maj x k = let b = boole (even x == (k==2)) in [2*x+b,2*(x+1)+b]
+        maj x k = let b = boole (even x == (k==2)) in map (flip mod $ 2*the ls) [2*x+b,2*(x+1)+b]
 model_gen XYZ2 ls js | length js == 3*3 = (ls, basic_gen ls .* gen) -- [jx,jy,jz,jx2,jy2,jz2,jx',jy',jz']
   where gen [x] rs_ = let [j,j2,j'] = partitions 3 js
                           ([r,r2,r'],rs) = mapFst (partitions 3) $ splitAt (3*3) rs_ in
@@ -1084,44 +1074,59 @@ generic_histo_ xs = IntMap.toList . foldl'
 
 default_meta'G   :: Meta'G
 merge_meta'G     :: Meta'G -> Meta'G -> Meta'G
+g4s_meta'G       :: Sigma -> Sigma
 init_meta'RG     :: RG -> Meta'RG
-update_meta'RG   :: RG -> RG -> Meta'RG
+update_meta'RG   :: RG -> RG -> RG
 --
 has_majQ         :: Bool
 set_maj'G        :: [Int] -> Sigma -> Sigma
 get_maj'G        :: Sigma -> IntSet
 get_majHistos'RG :: RG -> [MajHisto]
 
-type Meta'G      = ()
-default_meta'G   = ()
-merge_meta'G     = const
-type Meta'RG     = ()
-init_meta'RG     = const ()
-update_meta'RG   = const . meta'RG
---
-has_majQ         = False
-set_maj'G _      = id
-get_maj'G        = undefined
-get_majHistos'RG = undefined
-
--- type Meta'G           = IntSet
--- default_meta'G        = IntSet.empty
--- merge_meta'G          = xor'IntSet
--- type Meta'RG          = [MajHisto] -- [RG step -> [(# majorana, [coefficients])]]
--- init_meta'RG rg       = [calc_majHisto rg]
--- update_meta'RG rg rg' = calc_majHisto rg' : meta'RG rg
+-- type Meta'G      = ()
+-- default_meta'G   = ()
+-- merge_meta'G     = const
+-- g4s_meta'G       = id
+-- type Meta'RG     = ()
+-- init_meta'RG     = const ()
+-- update_meta'RG _ = const
 -- --
--- has_majQ              = True
--- set_maj'G maj g       = g { meta'G = IntSet.fromList maj}
--- get_maj'G             = meta'G
--- get_majHistos'RG      = meta'RG
+-- has_majQ         = False
+-- set_maj'G _      = id
+-- get_maj'G        = undefined
+-- get_majHistos'RG = undefined
+
+type Meta'G           = Maybe IntSet
+default_meta'G        = Nothing
+merge_meta'G          = forceF .* liftM2 xor'IntSet
+g4s_meta'G            = set_maj'G []
+type Meta'RG          = [MajHisto] -- [RG step -> [(# majorana, [coefficients])]]
+init_meta'RG rg       = [calc_majHisto rg]
+update_meta'RG rg rg' = rg' { ham'RG = {-cut_ham $-} ham'RG rg',
+                              meta'RG = calc_majHisto rg' : meta'RG rg }
+  where
+    cut_ham    ham = flip deleteSigmas'Ham ham $ filter (not . majCut) $ Map.keys $ gc'Ham $ ham
+      where majCut = (<=4) . IntSet.size . get_maj'G
+--     reduce_maj ham = foldl' (flip $ \gT -> insert'Ham gT . delete'Ham (fst gT)) ham
+--                    $ mapMaybe f $ Map.toList $ gc'Ham $ ham
+--       where g3       = fst $ head $ stab0'RG rg'
+--             [(i3,3)] = IntMap.toList $ ik'G g3
+--             f (g,c)  | IntMap.member i3 $ ik'G g = Just (g {meta'G = meta'G g `merge_meta'G` meta'G g3}, c)
+--                      | otherwise                 = Nothing
+--
+has_majQ              = True
+set_maj'G             = set_meta'G . Just . IntSet.fromList
+get_maj'G             = fromJust . meta'G
+get_majHistos'RG      = meta'RG
 
 -- MajHisto
 
 type MajHisto = [(Int,[F])]
+-- type MajHisto = [(Int,Int)]
 
 calc_majHisto :: RG -> MajHisto
 calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (mapFst $ IntSet.size . get_maj'G) . Map.toList . gc'Ham . ham'RG
+-- calc_majHisto = map (\xs -> (fst $ head xs, length xs)) . groupWith fst . map (mapFst $ IntSet.size . get_maj'G) . Map.toList . gc'Ham . ham'RG
 
 -- float type
 
@@ -1212,9 +1217,6 @@ main = do
     putStr "Wolff errors: "
     print $ cut_pow2 $ wolff_errors'RG rg
     
-  --putStr "Wolff2 errors: "
-  --print $ cut_pow2 $ wolff2_errors'RG rg
-    
     putStr "offdiag errors: "
     print $ cut_pow2 $ offdiag_errors'RG rg
     
@@ -1281,10 +1283,6 @@ main = do
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
-  when has_majQ $ do
-    putStr "majorana histo: "
-    print $ cut_pow2 $ get_majHistos'RG rg
-  
   when calc_EEQ $ do
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ ee1d xs (small_lsQ || ternaryQ ? [0] $ 0:xs) $ stab'RG rg
@@ -1312,6 +1310,10 @@ main = do
   when calc_aCorr'Q $ do
     putStr "anderson correlator': " -- [(distance, [xyz -> (correlator,error)])]
     max_wolff_terms_==0 ? print aCorr $ print aCorr'
+  
+  when (has_majQ && model == XYZ) $ do
+    putStr "majorana histo: "
+    print $ cut_pow2 $ tail $ get_majHistos'RG rg
   
   putStr "CPU time: "
   cpu_time <- getCPUTime

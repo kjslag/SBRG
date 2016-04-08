@@ -1083,41 +1083,35 @@ set_maj'G        :: [Int] -> Sigma -> Sigma
 get_maj'G        :: Sigma -> IntSet
 get_majHistos'RG :: RG -> [MajHisto]
 
--- type Meta'G      = ()
--- default_meta'G   = ()
--- merge_meta'G     = const
--- g4s_meta'G       = id
--- type Meta'RG     = ()
--- init_meta'RG     = const ()
--- update_meta'RG _ = const
--- --
--- has_majQ         = False
--- set_maj'G _      = id
--- get_maj'G        = undefined
--- get_majHistos'RG = undefined
-
-type Meta'G           = Maybe IntSet
-default_meta'G        = Nothing
-merge_meta'G          = forceF .* liftM2 xor'IntSet
-g4s_meta'G            = set_maj'G []
-type Meta'RG          = [MajHisto] -- [RG step -> [(# majorana, [coefficients])]]
-init_meta'RG rg       = [calc_majHisto rg]
-update_meta'RG rg rg' = rg' { ham'RG = {-cut_ham $-} ham'RG rg',
-                              meta'RG = calc_majHisto rg' : meta'RG rg }
-  where
-    cut_ham    ham = flip deleteSigmas'Ham ham $ filter (not . majCut) $ Map.keys $ gc'Ham $ ham
-      where majCut = (<=4) . IntSet.size . get_maj'G
---     reduce_maj ham = foldl' (flip $ \gT -> insert'Ham gT . delete'Ham (fst gT)) ham
---                    $ mapMaybe f $ Map.toList $ gc'Ham $ ham
---       where g3       = fst $ head $ stab0'RG rg'
---             [(i3,3)] = IntMap.toList $ ik'G g3
---             f (g,c)  | IntMap.member i3 $ ik'G g = Just (g {meta'G = meta'G g `merge_meta'G` meta'G g3}, c)
---                      | otherwise                 = Nothing
+type Meta'G      = ()
+default_meta'G   = ()
+merge_meta'G     = const
+g4s_meta'G       = id
+type Meta'RG     = ()
+init_meta'RG     = const ()
+update_meta'RG _ = id
 --
-has_majQ              = True
-set_maj'G             = set_meta'G . Just . IntSet.fromList
-get_maj'G             = fromJust . meta'G
-get_majHistos'RG      = meta'RG
+has_majQ         = False
+set_maj'G _      = id
+get_maj'G        = undefined
+get_majHistos'RG = undefined
+
+-- type Meta'G           = Maybe IntSet
+-- default_meta'G        = Nothing
+-- merge_meta'G          = forceF .* liftM2 xor'IntSet
+-- g4s_meta'G            = set_maj'G []
+-- type Meta'RG          = [MajHisto] -- [RG step -> [(# majorana, [coefficients])]]
+-- init_meta'RG rg       = [calc_majHisto rg]
+-- update_meta'RG rg rg' = rg' { ham'RG = {-cut_ham $-} ham'RG rg',
+--                               meta'RG = calc_majHisto rg' : meta'RG rg }
+--   where
+--     cut_ham    ham = flip deleteSigmas'Ham ham $ filter (not . majCut) $ Map.keys $ gc'Ham $ ham
+--       where majCut = (<=4) . IntSet.size . get_maj'G
+-- --
+-- has_majQ              = True
+-- set_maj'G             = set_meta'G . Just . IntSet.fromList
+-- get_maj'G             = fromJust . meta'G
+-- get_majHistos'RG      = meta'RG
 
 -- MajHisto
 

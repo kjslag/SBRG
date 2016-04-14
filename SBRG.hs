@@ -1,8 +1,3 @@
--- TODO
--- count higher order terms by keeping track of set of majorana operators
--- then look at flow of these terms, and also try cutting out interaction n>=6 terms
--- also use Z_2^2 symmetry to make ED faster
-
 -- ghci -fbreak-on-error
 -- :set -fbreak-on-error
 -- :set args 1 XYZ [4] [1,1,1] 1

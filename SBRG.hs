@@ -1,3 +1,6 @@
+-- author: Kevin Slagle
+-- github.com/kjslag/SBRG
+
 -- ghci -fbreak-on-error
 -- :set -fbreak-on-error
 -- :set args 1 XYZ [4] [1,1,1] 1
@@ -14,7 +17,6 @@ import GHC.Prim (reallyUnsafePtrEquality#)
 import GHC.Exts (groupWith, sortWith, the)
 
 import Control.Monad
-import qualified Control.Monad.ST as ST
 import Data.Bits
 import Data.Coerce
 import Data.Either
@@ -27,6 +29,7 @@ import Data.Ord
 import Data.Tuple
 import Debug.Trace
 import Numeric.IEEE (nan,infinity)
+import Safe.Exact
 import System.Environment
 import System.CPUTime
 import System.Exit (exitSuccess, exitFailure)
@@ -257,6 +260,10 @@ infixl 6 +?
 x +? y = x_y*x_y < epsilon*(x*x + y*y) ? Nothing $ Just x_y
   where x_y = x + y
 
+rotateLeft :: Int -> [a] -> [a]
+rotateLeft n xs = bs ++ as
+  where (as,bs) = splitAtExact n xs
+
 -- input must be sorted
 modDifferences :: Int -> [Int] -> [Int]
 modDifferences l is = (head is + l - last is) : zipWith (-) (tail is) is
@@ -455,8 +462,11 @@ check'Sigma g = all (\k -> 1<=k && k<=3) $ IntMap.elems $ ik'G g
 toList'GT :: SigmaTerm -> ([(Int,Int)],F)
 toList'GT = mapFst $ IntMap.toList . ik'G
 
+toLists'GT :: [Int] -> SigmaTerm -> ([([Int],Int)],F)
+toLists'GT ls = (mapFst $ map $ mapFst $ xs_i ls) . toList'GT
+
 fromList'GT :: Int -> ([(Int,Int)],F) -> SigmaTerm
-fromList'GT iD = mapFst $ sigma iD . IntMap.fromListWith (error "fromList'GT")
+fromList'GT iD = mapFst $ \g -> sigma iD $ IntMap.fromListWith (error $ "fromList'GT: " ++ show g) g
 
 show'GTs :: [SigmaTerm] -> String
 show'GTs = if' prettyPrint (concat . intersperse " + " . map (\(g,c) -> show c ++ " σ" ++ show g)) show
@@ -730,6 +740,7 @@ c4s_wolff'Ham = c4s_wolff_'Ham False
 type G4_H0G = Either Sigma ([SigmaTerm],Int) -- Either g4 (icomm H_0 Sigma/h_3^2, i3)
 
 data RG = RG {
+  model'RG           :: !Model,
   ham0'RG            :: !Ham,              -- original Ham in old basis
   c4_ham0'RG         ::  Ham,              -- original ham in new basis
   ham'RG             :: !Ham,
@@ -764,13 +775,13 @@ i3s'RG = map snd . rights . g4_H0Gs'RG
 wolff_errors'RG :: RG -> [F]
 wolff_errors'RG = map (rss . map snd . fst) . rights . g4_H0Gs'RG
 
-init'RG :: Ham -> RG
-init'RG ham = rg
-  where rg  = RG ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
+init'RG :: Model -> Ham -> RG
+init'RG model ham = rg
+  where rg  = RG model ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
-rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 stab1 _ _ max_rg_terms _)
+rgStep rg@(RG model _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 stab1 _ _ max_rg_terms _)
   | IntSet.null unusedIs = rg
   | otherwise            = force'RG $ update_meta'RG rg rg'
   where
@@ -778,11 +789,15 @@ rgStep rg@(RG _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 st
     _G2, _G3, _G4 :: [SigmaTerm]
     g3        = fromMaybe g3__ g3_
       where g3_  = (fst<$>) $ listToMaybe $ toDescList'Ham ham1
-            g3__ = (!!1) $ sortOn (IntMap.size . ik'G . fst . c4s (-1) (g4s'RG rg) . (,0)) [sigma 0 $ IntMap.fromSet (const k) unusedIs | k <- [1..3]]
+            g3__ = case model of
+                        ToricCode -> head $ sortOn calc_size $ map (sigma 0 . IntMap.fromListWith undefined . filter ((/=0) . snd))
+                                          $ tail $ traverse (\i -> map (i,) [0..3]) $ IntSet.toList unusedIs
+                        _ -> (!!1) $ sortOn calc_size [sigma 0 $ IntMap.fromSet (const k) unusedIs | k <- [1..3]]
+            calc_size = IntMap.size . ik'G . fst . c4s (-1) (g4s'RG rg) . (,0)
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
     unusedIs_ = IntMap.fromSet (const ()) unusedIs
   --i3        = snd $ the $ until (null . drop 1) (\is -> let is' = filter (even . fst) is in map (mapFst (flip div 2)) $ null is' ? is $ is') $ map (\i -> (i,i))
-    i3        = fst $ maximumBy (comparing snd) $ (\is -> zip is $ modDifferences (n'Ham ham1) is) -- TODO 1d only
+    i3        = fst $ maximumBy (comparing snd) $ (\is -> zipExact is $ modDifferences (n'Ham ham1) is) -- TODO 1d only
               $ IntMap.keys $ IntMap.intersection (ik'G g3) unusedIs_
     unusedIs' = IntSet.delete i3 unusedIs
     g3'       = set_meta'G (meta'G g3) $ sigma 0 $ IntMap.singleton i3 3
@@ -875,7 +890,7 @@ anderson_corr_gs_ z x0 (g0,g0') ls | isJust gg = [(i, g_ i) | i <- [0,z..n-1]]
         gg | x0 == 0 && g0==g0' = Just g0
            | otherwise          = (fst<$>) $ acomm g0 $ sigma 0 $ IntMap.mapKeys (flip mod n . (+ x0*lY)) $ ik'G g0'
         g_ :: Int -> IntMap Int -- g(i) g(i+x0)
-        g_ i = IntMap.mapKeys (i_xs ls . zipWith (+) (xs_i ls i) . xs_i ls) $ ik'G $ fromJust gg
+        g_ i = IntMap.mapKeys (i_xs ls . zipWithExact (+) (xs_i ls i) . xs_i ls) $ ik'G $ fromJust gg
 
 anderson_corr_ ::              Ham -> [(Int, IntMap Int)] -> (Double,Double)
 anderson_corr_ _    [] = (0,0)
@@ -938,7 +953,7 @@ ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s,
     modn i = mod i n
     -- this function ends up being O(N^2) on acommQ if the system is critical
     acommMat :: [Sigma] -> [[Bool]]
-    acommMat gs = zipWith (zipWith (||)) mat $ transpose mat
+    acommMat gs = zipWithExact (zipWithExact (||)) mat $ transpose mat
       where mat = [replicate pad False ++ [acommQ g $ head gs' | g <- tail gs'] | (pad,gs') <- zip [1..] $ init $ tails gs]
     -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
     -- TODO: I think this works even if lx is odd, but I'm not certain
@@ -947,7 +962,7 @@ ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s,
              $ map (\g -> IntMap.fromListWith (error "cutStabs'")
                         $ map (,[g]) $ cutRegions $ intUnion $ map (flip div lY) $ IntMap.keys $ ik'G g) localStabs
       where cutRegions :: [Int] -> [Int]
-            cutRegions xs = concatMap region0 $ zip xs (tail xs ++ [head xs])
+            cutRegions xs = concatMap region0 $ zipExact xs (tail xs ++ [head xs])
             region0 (x,x') | modx (x'-x) <= lx_2 = (region `on` modx) (x      +1) (x'     +1)
                            | otherwise           = (region `on` modx) (x'-lx_2+1) (x +lx_2+1)
             region :: Int -> Int -> [Int]
@@ -961,7 +976,7 @@ randoms :: Int -> [F]
 randoms seed = map toF $ Random.randoms $ Random.mkStdGen seed
 
 i_xs :: [Int] -> [Int] -> Int
-i_xs ls xs = foldl' (\i (l,x) -> i*l + mod x l) 0 $ zip ls xs
+i_xs ls xs = foldl' (\i (l,x) -> i*l + mod x l) 0 $ zipExactNote "i_xs" ls xs
 
 xs_i :: [Int] -> Int -> [Int]
 xs_i ls i0 = map snd $ init $ scanr (\l (i,_) -> divMod i l) (i0,0) ls
@@ -974,11 +989,16 @@ init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ conc
                                 $ flip State.evalState (randoms seed) $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
 
-data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | ToricCode | Z2Gauge
+data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | ToricCode | Z2Gauge | Fibonacci
   deriving (Eq, Show, Read, Enum)
 
-basic_gen :: [Int] -> ([([([Int],Int)],F)],a) -> ([SigmaTerm],a)
-basic_gen ls (gs,rs) = ([fromList'GT 0 ([(i_xs ls xs,k) | (xs,k) <- g],c) | (g,c) <- gs], rs)
+-- basic_gen :: [Int] -> ([([([Int],Int)],F)],a) -> ([Int],([SigmaTerm],a))
+-- basic_gen ls (gs,rs) = ([fromList'GT 0 ([(i_xs ls xs,k) | (xs,k) <- g],c) | (g,c) <- gs], rs)
+
+type RawSigmaTerm = ([([Int],Int)],F)
+
+basic_gen :: [Int] -> ([Int] -> [F] -> ([RawSigmaTerm], [F])) -> ([Int],ModelGen)
+basic_gen ls gen = (ls, (\(gs,rs) -> ([fromList'GT 0 ([(i_xs ls xs,k) | (xs,k) <- g],c) | (g,c) <- gs], rs)) .* gen)
 
 model_gen :: Model -> [Int] -> [F] -> ([Int],ModelGen)
 model_gen RandFerm ls [p] = (ls, gen)
@@ -991,7 +1011,7 @@ model_gen RandFerm ls [p] = (ls, gen)
         gen  _  _  = error "model_gen RandFerm"
         gen' (terms,rp:rh:rs') g = (if' (rp<p) [fromList'GT 0 (g,rh)] [] ++ terms, rs')
         gen' _                 _ = error "model_gen RandFerm gen'"
-model_gen Ising ls [j,k,h] = (ls, basic_gen ls .* gen)
+model_gen Ising ls [j,k,h] = basic_gen ls gen
   where (kj,kh) = (3,1)
         gen [x] (rj:rk:rh:rs) =
           ([ ([([x],kj),([x+1],kj)],j*rj), ([([x],kh),([x+1],kh)],k*rk), ([([x],kh)],h*rh) ], rs)
@@ -1005,7 +1025,7 @@ model_gen XYZ ls j = (ls, gen)
         gen _ _ = error "model_gen XYZ"
         maj x 3 = maj x 1 ++ maj x 2
         maj x k = let b = boole (even x == (k==2)) in map (flip mod $ 2*the ls) [2*x+b,2*(x+1)+b]
-model_gen XYZ2 ls js | length js == 3*3 = (ls, basic_gen ls .* gen) -- [jx,jy,jz,jx2,jy2,jz2,jx',jy',jz']
+model_gen XYZ2 ls js | length js == 3*3 = basic_gen ls gen -- [jx,jy,jz,jx2,jy2,jz2,jx',jy',jz']
   where gen [x] rs_ = let [j,j2,j'] = partitions 3 js
                           ([r,r2,r'],rs) = mapFst (partitions 3) $ splitAt (3*3) rs_ in
           (concat [concat [
@@ -1027,7 +1047,7 @@ model_gen XYZ2 ls [jx,jy,jz] = model_gen XYZ2 ls [jx,jy,jz,0.1,0,0,0,0,0]
 --         gen [_,_,_] rs = ([], rs)
 --         gen _ _ = error "model_gen MajChain"
 model_gen MajChain ls [t,   g   ] = model_gen MajChain ls [t,t,g,g]
-model_gen MajChain ls [t,t',g,g'] = (ls, basic_gen ls .* gen)
+model_gen MajChain ls [t,t',g,g'] = basic_gen ls gen
   where (kt,kt') = (3,1) -- corr_z_xs_ggs depends on this
         gen [x] (rt:rt':rg:rg':rs) =
           ([  ([([x],kt )            ],  t *rt ),
@@ -1036,14 +1056,14 @@ model_gen MajChain ls [t,t',g,g'] = (ls, basic_gen ls .* gen)
               ([([x],kt'),([x+2],kt')],  g'*rg')
             ], rs)
         gen _ _ = error "model_gen MajChain"
-model_gen ToricCode ls [a,b',b,a'] = (ls++[2], basic_gen ls .* gen)
+model_gen ToricCode ls [a,b',b,a'] = basic_gen (ls++[2]) gen
   where (ka,kb) = (3,1)
         gen [x,y,0] (ra:rb:ra'1:ra'2:rb'1:rb'2:rs) =
           ([ ([([x,y,1],ka),([x+1,y,2],ka),([x,y+1,1],ka),([x,y,2],ka)],a*ra), ([([x,y,1],kb)],b'*rb'1), ([([x,y,2],kb)],b'*rb'2),
              ([([x,y,1],kb),([x-1,y,1],kb),([x,y-1,2],kb),([x,y,2],kb)],b*rb), ([([x,y,1],ka)],a'*ra'1), ([([x,y,2],ka)],a'*ra'2)], rs)
         gen [_,_,1] rs = ([],rs)
         gen _       _  = error "model_gen ToricCode"
-model_gen Z2Gauge ls [a,b',b,a'] = (ls++[3], basic_gen ls .* gen)
+model_gen Z2Gauge ls [a,b',b,a'] = basic_gen (ls++[3]) gen
   where (ka,kb,kA,kB) = (3,1,3,1)
         c = sum $ map abs $ [a,b',b,a']
         gen [x,y,0] (ra:rb:ra'1:ra'2:rb'1:rb'2:rs) =
@@ -1150,6 +1170,7 @@ main = do
       calc_aCorr'Q   = True
       detailedQ      = False
       cut_powQ       = True
+      keep_diagQ     = True
       
       max_rg_terms_default    = calc_aCorr'Q ? "32" $ "16"
       max_wolff_terms_default = "4"
@@ -1172,8 +1193,8 @@ main = do
       ls       = ls'RG rg0
       n        = n'RG  rg0
       z        = n // product ls0
-      rg0      = init'RG $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
-      rg       = runRG $ rg0 { diag'RG            = not ternaryQ ? diag'RG rg0 $ Nothing,
+      rg0      = init'RG model $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
+      rg       = runRG $ rg0 { diag'RG            = not ternaryQ && keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
                                max_rg_terms'RG    = max_rg_terms,
                                max_wolff_terms'RG = max_wolff_terms }
@@ -1183,7 +1204,7 @@ main = do
   
   unless (0 < n) $ error "ln2_ls"
   
-  putStr "version:            "; putStrLn "160403.0" -- year month day . minor
+  putStr "version:            "; putStrLn "160517.0" -- year month day . minor
   putStr "model:              "; print $ show model
   putStr "Ls:                 "; print ls0
   putStr "couplings:          "; print couplings
@@ -1197,10 +1218,13 @@ main = do
     putStr "Hamiltonian: "
     print $ ham0'RG rg0
   
-  putStr "missing stabilizers: "
-  print $ length $ takeWhile ((==0) . snd) $ stab0'RG rg
+  let n_missing = length $ takeWhile ((==0) . snd) $ stab0'RG rg
+      cut_pow2 = reverse . if' (cut_powQ && not small_lsQ) (filter $ isPow2 . fst) id . zip [1..]
+      ordered_stab = map (c4s (-1) (g4s'RG rg)) $ stab0'RG rg
   
-  let cut_pow2 = reverse . if' (cut_powQ && not small_lsQ) (filter $ isPow2 . fst) id . zip [1..]
+  putStr "missing stabilizers: "
+  print $ n_missing
+--mapM_ print $ map (toLists'GT ls) $ take n_missing ordered_stab
   
   unless ternaryQ $ do
     putStr "Wolff errors: "
@@ -1213,10 +1237,11 @@ main = do
     print $ cut_pow2 $ map snd $ stab0'RG rg
     
     putStr "stabilizer sizes: "
-    print $ cut_pow2 $ map (IntMap.size . ik'G . fst . c4s (-1) (g4s'RG rg)) $ stab0'RG rg
+    print $ cut_pow2 $ map (IntMap.size . ik'G . fst) $ ordered_stab
     
-    putStr "stabilizer lengths: "
-    print $ cut_pow2 $ map (length'Sigma (head ls) . fst . c4s (-1) (g4s'RG rg)) $ stab0'RG rg
+    when (length ls0 == 1) $ do
+      putStr "stabilizer lengths: "
+      print $ cut_pow2 $ map (length'Sigma (head ls) . fst) $ ordered_stab
   
   when detailedQ $ do
     putStr "stabilizers: "
@@ -1273,8 +1298,21 @@ main = do
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
   when calc_EEQ $ do
+    let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
+        entanglement_data = ee1d_ xs (small_lsQ || ternaryQ ? [0] $ 0:xs) $ stab'RG rg
+        entanglement_map = Map.fromListWith (error "entanglement_map") $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
+        lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
+                      \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
+                                       justIf (const$x/=0) $ (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
+    
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
-    print $ ee1d xs (small_lsQ || ternaryQ ? [0] $ 0:xs) $ stab'RG rg
+    print $ mapMeanError entanglement_data
+    
+    putStr "long range mutual information: "
+    print $ lrmi_data
+    
+--     putStrLn "LRMI: "
+--     mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> if' (l==l0 && x>=head ls//4) (Just (x,e,de)) Nothing) lrmi_data) | l0 <- init $ init $ xs]
   
 --   putStr "entanglement entropies: " -- [(region size, region separation, [entanglement entropies])]
 --   print $ ee1d_ [1..last xs] [0] $ stab'RG rg

@@ -9,19 +9,22 @@
 {-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances #-} -- OverloadedLists
 -- :set -XTupleSections
 
-{-# OPTIONS -Wall -fno-warn-unused-binds -fno-warn-unused-imports -O2 -optc-O2 -optc-march=native -optc-mfpmath=sse #-}
+{-# OPTIONS -Wall -fno-warn-unused-binds -fno-warn-unused-imports -O -optc-O2 -optc-march=native -optc-mfpmath=sse #-}
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
--- +RTS -xc -sstderr -p              -N4
+-- +RTS -xc -s -p                    -N4
+-- +RTS -hy && hp2ps -c SBRG.hp && okular SBRG.ps
 
 import GHC.Prim (reallyUnsafePtrEquality#)
 import GHC.Exts (groupWith, sortWith, the)
 
+import Control.Exception.Base (assert)
 import Control.Monad
 import Data.Bits
 import Data.Coerce
 import Data.Either
 import Data.Function
 import Data.Foldable
+import Data.Hashable as Hashable
 import Data.List
 import Data.Maybe
 import Data.Monoid
@@ -102,15 +105,6 @@ infixl 7 //
 x // y | (q,0) <- divMod x y = q
        | otherwise           = error_
 
-forceF :: Foldable t => t a -> t a
-forceF x = foldl' (flip seq) x x
-
--- force2 :: (a,b) -> (a,b)
--- force2 xy@(x,y) = x `seq` y `seq` xy
-
--- force3 :: (a,b,c) -> (a,b,c)
--- force3 xyz@(x,y,z) = x `seq` y `seq` z `seq` xyz
-
 fst3 :: (a,b,c) -> a
 fst3 (x,_,_) = x
 
@@ -182,8 +176,12 @@ nest :: Int -> (a -> a) -> a -> a
 nest 0 _ = id
 nest n f = nest (n-1) f . f
 
-justIf :: (a -> Bool) -> a -> Maybe a
-justIf q x = q x ? Just x $ Nothing
+justIf :: Bool -> a -> Maybe a
+justIf True  = Just
+justIf False = const Nothing
+
+justIf' :: (a -> Bool) -> a -> Maybe a
+justIf' f x = justIf (f x) x
 
 -- minimumOn :: Ord b => (a -> b) -> [a] -> a
 -- minimumOn f xs = snd $ minimumBy (comparing fst) $ map (\x -> (f x, x)) xs
@@ -214,6 +212,9 @@ mergeSortedBy cmp = mergeUsing mergePair []
                                         | otherwise       = y : mergePair xs  ys'
         mergePair [] ys = ys
         mergePair xs [] = xs
+
+mergeSortedWith :: Ord b => (a -> b) -> [[a]] -> [a]
+mergeSortedWith f = mergeSortedBy $ comparing f
 
 -- same as mergeSortedBy except uses f to combine equal elements
 mergeUnionsBy :: (a -> a -> Ordering) -> (a -> a -> a) -> [[a]] -> [a]
@@ -263,10 +264,37 @@ rotateLeft n xs = bs ++ as
 modDifferences :: Int -> [Int] -> [Int]
 modDifferences l is = (head is + l - last is) : zipWith (-) (tail is) is
 
+-- Force
+
+class MySeq a where
+  mySeq :: a -> b -> b
+  mySeq = seq
+  
+  myForce :: a -> a
+  myForce x = x `mySeq` x
+
+mySeq'Foldable :: (Foldable t, MySeq a) => t a -> b -> b
+mySeq'Foldable = foldl'_ mySeq
+
+instance MySeq Int
+instance MySeq Double
+
+instance MySeq a => MySeq (Maybe a) where
+  mySeq = mySeq'Foldable
+
+instance MySeq a => MySeq [a] where
+  mySeq = mySeq'Foldable
+
+instance (MySeq a, MySeq b) => MySeq (a,b) where
+  mySeq (x,y) = mySeq x . mySeq y
+
+instance (MySeq a, MySeq b) => MySeq (Either a b) where
+  mySeq = either mySeq mySeq
+
 -- LogFloat
 -- https://hackage.haskell.org/package/logfloat-0.13.3.1/docs/Data-Number-LogFloat.html#v:product
 
-data LogFloat = LogFloat Bool Double
+data LogFloat = LogFloat !Bool !Double
 
 -- note: don't define toDouble'LF
 -- only showsPrec can use it safely
@@ -286,6 +314,8 @@ log'LF _                 = error_
 isNaN'LF :: LogFloat -> Bool
 isNaN'LF (LogFloat _ y) = isNaN y
   
+instance MySeq LogFloat
+
 instance Show LogFloat where
   showsPrec n (LogFloat s y) str
     | abs y > 600 && not (isInfinite y || isNaN y)
@@ -374,7 +404,7 @@ fromSymmetric'Z2Mat mat = Z2Mat mat mat
 popRow'Z2Mat :: Z2Mat -> Maybe (IntSet, Z2Mat)
 popRow'Z2Mat (Z2Mat rows cols) = case IntMap.minViewWithKey rows of
     Nothing               -> Nothing
-    Just ((i,row), rows') -> let cols' = IntSet.foldl' (flip $ IntMap.alter $ justIf (not . IntSet.null) . IntSet.delete i . fromJust) cols row -- IntSet.delete
+    Just ((i,row), rows') -> let cols' = IntSet.foldl' (flip $ IntMap.alter $ justIf' (not . IntSet.null) . IntSet.delete i . fromJust) cols row
                              in Just (row, Z2Mat rows' cols')
 
 xorRow'Z2Mat :: IntSet -> Int -> Z2Mat -> Z2Mat
@@ -382,7 +412,7 @@ xorRow'Z2Mat row i (Z2Mat rows cols) = Z2Mat rows' cols'
   where rows'     = IntMap.alter (xorMay row . fromJust) i rows
         cols'     = IntSet.foldl' (flip $ IntMap.alter $ maybe (Just i0) $ xorMay i0) cols row
         i0        = IntSet.singleton i
-        xorMay    = justIf (not . IntSet.null) .* xor'IntSet
+        xorMay    = justIf' (not . IntSet.null) .* xor'IntSet
 
 -- rankZ2
 
@@ -399,14 +429,6 @@ rankZ2 = go 0 . fromSymmetric'Z2Mat
                     Just is -> IntSet.foldl' (flip $ xorRow'Z2Mat row) mat is
 
 -- rankZ2_ :: [IntSet] -> Int
--- rankZ2_ = go 0
---   where
---     go :: Int -> [IntSet] -> Int
---     go  n []         = n
---     go !n (row:rows) | IntSet.null row = go n rows
---                      | otherwise       = go (n+1) $ map (xor'IntSet row `applyIf` IntSet.member j) rows -- TODO change data structure, not every row needs to be updated each time
---       where
---         j = IntSet.findMin row
 -- 
 -- rankZ2_old :: [[Bool]] -> Int
 -- rankZ2_old = rankZ2_ . map (IntSet.fromList . map fst . filter snd . zip [0..])
@@ -458,11 +480,14 @@ instance AddHash MapAbsSigmas MapAbsSigmas where
 newtype AbsF = AbsF {absF :: F}
   deriving (Eq, Show)
 
+instance MySeq AbsF
+
 instance Ord AbsF where
   AbsF x `compare` AbsF y = compare (abs y) (abs x)
 
 -- Sigma
 
+-- TODO maybe add a ik_diag'G for ham'RG
 data Sigma = Sigma {
   ik'G   :: !(IntMap Int),
   iD'G   :: !Int,
@@ -482,6 +507,8 @@ set_iD'G iD g = g { iD'G = iD, hash'G = calc_hash'G (ik'G g) iD }
 
 set_meta'G :: Meta'G -> Sigma -> Sigma
 set_meta'G meta g = g { meta'G = meta }
+
+instance MySeq Sigma
 
 instance Eq Sigma where
   Sigma g1 iD1 _ hash1 == Sigma g2 iD2 _ hash2 = hash1==hash2 && iD1==iD2 && (ptrEquality g1 g2 || g1==g2)
@@ -555,14 +582,14 @@ multSigma1 2 3 = ( 1,1)
 multSigma1 3 2 = (-1,1)
 multSigma1 3 1 = ( 1,2)
 multSigma1 1 3 = (-1,2)
-multSigma1 k 0 = ( 0,k)
-multSigma1 0 k = ( 0,k)
+--multSigma1 k 0 = ( 0,k)
+--multSigma1 0 k = ( 0,k)
 multSigma1 _ _ = error_
 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
 multSigma (Sigma g1 iD1 meta1 _) (Sigma g2 iD2 meta2 _) = (n, g' {meta'G = merge_meta'G meta1 meta2})
-  where n  = IntMap.foldl' (+) 0 $ intersectionWith' (fst .* multSigma1) g1 g2 -- TODO implement IntMap.foldIntersectionWith
-        g' = sigma iD $ IntMap.mergeWithKey (\_ k1 k2 -> justIf (/=0) $ snd $ multSigma1 k1 k2) id id g1 g2
+  where n  = IntMap.foldl' (+) 0 $ intersectionWith' (fst .* multSigma1) g1 g2 -- a IntMap.foldIntersectionWith would be faster
+        g' = sigma iD $ IntMap.mergeWithKey (\_ k1 k2 -> justIf' (/=0) $ snd $ multSigma1 k1 k2) id id g1 g2
         iD | iD2==0 || iD1==iD2 = iD1
            | iD1==0             = iD2
            | otherwise          = error_
@@ -598,11 +625,9 @@ acomm g1 g2 = case mod n 4 of
 c4 :: Sigma -> Sigma -> Maybe SigmaTerm
 c4 g4 g = icomm g g4
 
--- TODO very slow
 c4s :: F -> [Sigma] -> SigmaTerm -> SigmaTerm
 c4s dir g4s gT = foldl' (\gT'@(!g',!c') g4 -> maybe gT' (scale'GT $ dir*c') $ c4 g4 g') gT g4s
 
--- TODO maybe cache this
 localQ'Sigma :: Int -> Sigma -> Bool
 localQ'Sigma n = \g -> IntMap.size (ik'G g) < sqrt_n
   where sqrt_n = round $ sqrt $ (fromIntegral n :: Double)
@@ -622,7 +647,7 @@ fromList'MapGT = Map.fromListWith (+)
 type MapAbsSigmas = Map AbsF (Set Sigma)
 
 delete'MAS :: SigmaTerm -> MapAbsSigmas -> MapAbsSigmas
-delete'MAS (g,c) = Map.alter (justIf (not . Set.null) . Set.delete g . fromJust) (AbsF c)
+delete'MAS (g,c) = Map.alter (justIf' (not . Set.null) . Set.delete g . fromJust) (AbsF c)
 
 toList'MAS :: MapAbsSigmas -> [SigmaTerm]
 toList'MAS gs_ = [(g,c) | (AbsF c,gs) <- Map.toAscList gs_,
@@ -643,12 +668,15 @@ data Ham = Ham {
   nlcgs'Ham :: !MapAbsSigmas,          -- |coefficient| -> non-local sigma matrices
   icgs'Ham  :: !(IntMap MapAbsSigmas), -- local sigmas: site index -> |coefficient| -> local sigma matrices
   ls'Ham    :: ![Int] }                -- system lengths
+  deriving (Show)
 
 n'Ham :: Ham -> Int
 n'Ham = product . ls'Ham
 
-instance Show Ham where
-  show = show'GTs . Map.toList . gc'Ham
+instance MySeq Ham
+
+-- instance Show Ham where
+--   show = show'GTs . Map.toList . gc'Ham
 
 -- instance Show Ham where
 --   showsPrec _ ham s = "fromLists'Ham " ++ show (ls'Ham ham) ++ " " ++ showsPrec 10 (toLists'Ham ham) s
@@ -678,7 +706,7 @@ null'Ham :: Ham -> Bool
 null'Ham = Map.null . gc'Ham
 
 insert'Ham :: SigmaTerm -> Ham -> Ham
-insert'Ham gT@(g,c) ham@(Ham gc lcgs nlcgs icgs ls)
+insert'Ham gT@(!g,!c) ham@(Ham gc lcgs nlcgs icgs ls)
 -- | c == 0       = ham -- this line would break stab'RG
   | isNothing c_ =
     Ham (Map.insertWith error_ g c gc)
@@ -711,7 +739,7 @@ deleteLookup'Ham g ham@(Ham gc lcgs nlcgs icgs ls) =
         gT            = (g,c)
         lcgs'         = delete'MAS gT lcgs
         nlcgs'        = delete'MAS gT nlcgs
-        icgs'         = IntMap.differenceWith (\cgs _ -> justIf (not . Map.null) $ delete'MAS gT cgs) icgs $ ik'G g
+        icgs'         = IntMap.differenceWith (\cgs _ -> justIf' (not . Map.null) $ delete'MAS gT cgs) icgs $ ik'G g
 
 deleteSigmas'Ham :: Foldable t => t Sigma -> Ham -> Ham
 deleteSigmas'Ham = foldl'_ delete'Ham
@@ -732,8 +760,9 @@ acommCandidates_ g ham = nlcgs'Ham ham : IntMap.elems localSigmas
 nearbySigmas :: Int -> Ham -> MapAbsSigmas
 nearbySigmas i ham = nlcgs'Ham ham +# (IntMap.lookup i $ icgs'Ham ham)
 
-icomm'Ham :: SigmaTerm -> Ham -> [SigmaTerm]
-icomm'Ham (gT@(g,_)) ham = catMaybes $ map (icomm'GT gT) $ acommCandidates g ham
+-- the Maybe SigmaTerm has a +/- 1 coefficient
+icomm_sorted'Ham :: SigmaTerm -> Ham -> [(Maybe SigmaTerm, F)]
+icomm_sorted'Ham (g,c) ham = map (\(g',c') -> (icomm g g', c*c')) $ acommCandidates_sorted g ham
 
 -- c4'Ham :: F -> Ham -> Sigma -> Ham
 -- c4'Ham dir ham g4 = union'Ham ham' $ fromList'MapGT $ Map.elems $ Map.intersectionWith (\(g,c) c' -> (g,dir*c*c')) ggT gc0'
@@ -768,7 +797,7 @@ c4_wolff_'Ham _        _               dir (Left    g4     ) ham = c4'Ham dir g4
 c4_wolff_'Ham onlyDiag max_wolff_terms dir (Right (_H0G,i3)) ham = deleteSigmas'Ham dels ham
                                                                  +# maybe id take max_wolff_terms new
   where dels = not onlyDiag ? [] $ fromMaybe [] $ filter ((/=3) . (IntMap.! i3) . ik'G) . toList . NestedFold <$> IntMap.lookup i3 (icgs'Ham ham)
-        new = mergeSortedBy (comparing $ AbsF . snd)
+        new = mergeSortedWith (AbsF . snd)
               [catMaybes [scale'GT dir <$> icomm'GT gT gT'
                          | gT <- acommCandidates_sorted (fst gT') ham,
                            not onlyDiag || IntMap.findWithDefault 0 i3 (ik'G $ fst gT) /= 3 ]
@@ -790,6 +819,7 @@ type G4_H0G = Either Sigma ([SigmaTerm],Int) -- Either g4 (icomm H_0 Sigma/h_3^2
 
 data RG = RG {
   model'RG           :: !Model,
+  ls0'RG             :: ![Int],
   ham0'RG            :: !Ham,              -- original Ham in old basis
   c4_ham0'RG         ::  Ham,              -- original ham in new basis
   ham'RG             :: !Ham,
@@ -804,10 +834,16 @@ data RG = RG {
   meta'RG            :: !Meta'RG,
   max_rg_terms'RG    :: !(Maybe Int),
   max_wolff_terms'RG :: !(Maybe Int)}
+  deriving (Show)
 
-force'RG :: RG -> RG
-force'RG = seq' diag'RG . seq' trash'RG
-  where seq' f rg = forceF (f rg) `seq` rg
+instance MySeq RG where
+  mySeq rg = id -- deepseq rg
+           . seq' diag'RG
+           . seq' (head . offdiag_errors'RG)
+           . seq' ((head<$>) . trash'RG)
+           . seq' (head . stab0'RG)
+           . seq' (head . stab1'RG)
+    where seq' f = mySeq $ f rg
 
 ls'RG :: RG -> [Int]
 ls'RG = ls'Ham . ham'RG
@@ -824,16 +860,18 @@ i3s'RG = map snd . rights . g4_H0Gs'RG
 wolff_errors'RG :: RG -> [F]
 wolff_errors'RG = map (rss . map snd . fst) . rights . g4_H0Gs'RG
 
-init'RG :: Model -> Ham -> RG
-init'RG model ham = rg
-  where rg  = RG model ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
+init'RG :: Model -> [Int] -> Ham -> RG
+init'RG model ls0 ham = rg
+  where rg  = RG model ls0 ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
-rgStep rg@(RG model _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 stab1 _ _ max_rg_terms _)
+rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 stab1 _ _ max_rg_terms _)
   | IntSet.null unusedIs = rg
-  | otherwise            = force'RG $ update_meta'RG rg rg'
+  | otherwise            = myForce $ update_meta'RG rg rg'
   where
+    useSimple_i3 = False -- length ls0 >= 2
+    
     _G1           :: [(SigmaTerm,SigmaTerm)] -- [(icomm g3' gT/h3', -gT)] where gT is in Sigma
     _G2, _G3, _G4 :: [SigmaTerm]
     g3        = fromMaybe g3__ g3_
@@ -844,10 +882,11 @@ rgStep rg@(RG model _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash st
                         _ -> (!!1) $ sortOn calc_size [sigma 0 $ IntMap.fromSet (const k) unusedIs | k <- [1..3]]
             calc_size = IntMap.size . ik'G . fst . c4s (-1) (g4s'RG rg) . (,0)
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
-    unusedIs_ = IntMap.fromSet (const ()) unusedIs
+  --unusedIs_ = IntMap.fromSet (const ()) unusedIs
   --i3        = snd $ the $ until (null . drop 1) (\is -> let is' = filter (even . fst) is in map (mapFst (flip div 2)) $ null is' ? is $ is') $ map (\i -> (i,i))
-    i3        = fst $ maximumBy (comparing snd) $ (\is -> zipExact is $ modDifferences (n'Ham ham1) is) -- TODO 1d only
-              $ IntMap.keys $ IntMap.intersection (ik'G g3) unusedIs_
+    i3        = useSimple_i3 ? IntSet.findMin unusedIs
+              $ fst $ maximumBy (comparing snd) $ (\is -> zipExact is $ modDifferences (n'Ham ham1) is)
+              $ IntSet.toList $ IntSet.intersection (IntMap.keysSet $ ik'G g3) unusedIs
     unusedIs' = IntSet.delete i3 unusedIs
     g3'       = set_meta'G (meta'G g3) $ sigma 0 $ IntMap.singleton i3 3
   --g3'       = sigma 0 $ IntMap.insertWith error_ i3 3 $ IntMap.difference (ik'G g3) unusedIs_
@@ -859,17 +898,17 @@ rgStep rg@(RG model _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash st
     ham2             = c4s'Ham 1 g4s_ ham1
                     -- get g3' coefficient
     h3'              = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
-                    -- find sigma matrices that overlap with g3', split into anticommuting commutators (_G1) and diagonal matrices (diag')
+                    -- find sigma matrices that overlap with g3', split into diagonal matrices (diag') and anticommuting commutators (_G1)
     (diag',_G1)      = mapFst (filter isDiag) $ partitionEithers
                      $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
                      $ toList'MAS $ nearbySigmas i3 ham2              -- the minus is because we apply icomm twice
                     -- remove anticommuting matrices from ham
     ham3             = flip deleteSigmas'Ham ham2 $ map (fst . snd) _G1
                     -- [Sigma, Delta]
-    _G_Delta         = [(icomm'Ham (g,1) ham3', c) | (g,c) <- map fst _G1]
+    _G_Delta         = [(icomm_sorted'Ham (g,1) ham3', c) | (g,c) <- map fst _G1]
                        where ham3' = delete'Ham g3' ham3
                     -- calc offdiag error
-    offdiag_error    = maybe 0 (/abs h3') $ maximumMay $ map (abs . snd) $ concat $ map fst _G_Delta
+    offdiag_error    = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst) $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
                     -- remove diagonal matrices from ham
     ham4             = flip deleteSigmas'Ham ham3 $ map fst diag'
                     -- distribute _G1
@@ -888,19 +927,35 @@ rgStep rg@(RG model _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash st
               ham'RG            = ham4 +# _G4,
               diag'RG           = (+# [diag',diag'']) <$> diag,
               unusedIs'RG       = unusedIs',
-              g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
+              g4_H0Gs'RG        = myForce g4_H0Gs' ++ g4_H0Gs,
               offdiag_errors'RG = offdiag_error : offdiag_errors,
               trash'RG          = (trash':) <$> trash,
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
               stab'RG           = stabilizers rg'}
     
-    isDiag :: SigmaTerm -> Bool
-    isDiag (g,_) = not $ any (flip IntSet.member unusedIs') $ IntMap.keys $ ik'G g -- TODO null . IntMap.intersection might be faster
+--     isDiag :: SigmaTerm -> Bool
+--     isDiag (g,_) = (keysSet' $ ik'G g) `isSubsetOf'` usedIs'
+--       where keysSet' x = IntMap.keysSet x
+--             isSubsetOf' x y = IntSet.isSubsetOf x y
+    
+--     isDiag :: SigmaTerm -> Bool
+--     isDiag (g,_) = IntSet.null $ IntSet.intersection unusedIs' $ IntMap.keysSet $ ik'G g
+    
+    isDiag :: SigmaTerm -> Bool -- TODO get rid of useSimple_i3 and the nUnused >= size_g below
+    isDiag (g,_) = useSimple_i3 ? (fst $ IntMap.findMax $ ik'G g) <= i3
+                 $ not $ True {-nUnused >= size_g-} ? (any (flip IntSet.member unusedIs') $ IntMap.keys $ ik'G g)
+                                           $ (any (flip IntMap.member $ ik'G g ) $ IntSet.toList unusedIs')
+      where size_g  = IntMap.size $ ik'G g
+            nUnused = IntSet.size unusedIs'
     
     find_G4s :: Sigma -> Sigma -> [Sigma]
-    find_G4s g0 g1 = maybe (g0 == g1 ? [] $ find_G4s g_ g1 ++ find_G4s g0 g_) (replicate 1 . fst) $ icomm g0 g1
-      where g_ = sigma 0 $ IntMap.singleton i3 1
+    find_G4s g0 g1 = maybe (g0 == g1 ? [] $ assert (acommQ g_ g1 && acommQ g0 g_) $ find_G4s g_ g1 ++ find_G4s g0 g_) (pure . fst) $ icomm g0 g1
+      where g_        = sigma 0 $ useSimple_i3 ? g_' $ IntMap.singleton i3 1
+            (i0s,i1s) = mapBoth (IntSet.intersection unusedIs . IntMap.keysSet . ik'G) (g0,g1)
+            i01s      = IntSet.intersection i0s i1s
+            is        = map IntSet.findMin $ IntSet.null i01s ? [i0s,i1s] $ [i01s]
+            g_'       = IntMap.fromListWith error_ $ [(i, head $ [1,2,3] \\ map (IntMap.findWithDefault 0 i . ik'G) [g0,g1]) | i <- is]
 
 stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
@@ -1052,7 +1107,7 @@ model_gen RandFerm ls [p] = (ls, gen)
                        [ [(x1,k1),(x2,k2)] ++ [(x,3) | x <- [x1+1..x2-1]] |
                          x1 <- [0..n-1], x2 <- [x1+1..n-1], k1 <- [1,2], k2 <- [1,2]]
         gen [_] rs = ([], rs)
-        gen  _  _  = error_
+        gen  _  _  = error "RandFerm"
         gen' (terms,rp:rh:rs') g = (if' (rp<p) [fromList'GT 0 (g,rh)] [] ++ terms, rs')
         gen' _                 _ = error_
 model_gen Ising ls [j,k,h] = basic_gen ls gen
@@ -1062,11 +1117,11 @@ model_gen Ising ls [j,k,h] = basic_gen ls gen
         gen [x,y] (rjx:rjy:rkx:rky:rh:rs) =
           ([ ([([x,y],kj),([x+1,y  ],kj)],j*rjx), ([([x,y],kh),([x+1,y  ],kh)],k*rkx), ([([x,y],kh)],h*rh),
              ([([x,y],kj),([x  ,y+1],kj)],j*rjy), ([([x,y],kh),([x  ,y+1],kh)],k*rky) ], rs)
-        gen _ _ = error_
+        gen _ _ = error "Ising"
 model_gen XYZ ls j = (ls, gen)
   where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
           ([ set_maj'G (maj x k) & mapFst $ fromList'GT 0 ([(i_xs ls [x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3]], rs)
-        gen _ _ = error_
+        gen _ _ = error "XYZ"
         maj x 3 = maj x 1 ++ maj x 2
         maj x k = let b = boole (even x == (k==2)) in map (flip mod $ 2*the ls) [2*x+b,2*(x+1)+b]
 model_gen XYZ2 ls js | length js == 3*3 = basic_gen ls gen -- [jx,jy,jz,jx2,jy2,jz2,jx',jy',jz']
@@ -1076,7 +1131,7 @@ model_gen XYZ2 ls js | length js == 3*3 = basic_gen ls gen -- [jx,jy,jz,jx2,jy2,
             [([([x  ],k+1),([x+1],k+1)], j !!k * r !!k),
              ([([x-1],k+1),([x+1],k+1)], j2!!k * r2!!k)],
             [([([x+i],mod (k+p*i) 3 +1) | i<-[-1..1]], j'!!k * r'!!k) | p<-[-1,1]] ]| k<-[0..2]], rs)
-        gen _ _ = error_
+        gen _ _ = error "XYZ2"
 model_gen XYZ2 ls [jx,jy,jz] = model_gen XYZ2 ls [jx,jy,jz,0.1,0,0,0,0,0]
 -- model_gen XYZ2 ls j@[_,_,_] = model_gen XYZ2 ls $ concat [map (*f) j | f <- [1,0.5,0]]
 -- model_gen MajChain [lx] couplings = model_gen MajChain [lx,1] couplings
@@ -1099,14 +1154,14 @@ model_gen MajChain ls [t,t',g,g'] = basic_gen ls gen
               ([([x],kt ),([x+1],kt )],  g *rg ),
               ([([x],kt'),([x+2],kt')],  g'*rg')
             ], rs)
-        gen _ _ = error_
+        gen _ _ = error "MajChain"
 model_gen ToricCode ls [a,b',b,a'] = basic_gen (ls++[2]) gen
   where (ka,kb) = (3,1)
         gen [x,y,0] (ra:rb:ra'1:ra'2:rb'1:rb'2:rs) =
           ([ ([([x,y,1],ka),([x+1,y,2],ka),([x,y+1,1],ka),([x,y,2],ka)],a*ra), ([([x,y,1],kb)],b'*rb'1), ([([x,y,2],kb)],b'*rb'2),
              ([([x,y,1],kb),([x-1,y,1],kb),([x,y-1,2],kb),([x,y,2],kb)],b*rb), ([([x,y,1],ka)],a'*ra'1), ([([x,y,2],ka)],a'*ra'2)], rs)
         gen [_,_,1] rs = ([],rs)
-        gen _       _  = error_
+        gen _       _  = error "ToricCode"
 model_gen Z2Gauge ls [a,b',b,a'] = basic_gen (ls++[3]) gen
   where (ka,kb,kA,kB) = (3,1,3,1)
         c = sum $ map abs $ [a,b',b,a']
@@ -1116,8 +1171,8 @@ model_gen Z2Gauge ls [a,b',b,a'] = basic_gen (ls++[3]) gen
                                     ([([x,y,0],kA),([x,y,2],ka),([x  ,y+1,0],kA)],a'*ra'2),
              ([([x,y,0],kB),([x,y,1],kb),([x-1,y,1],kb),([x,y-1,2],kb),([x,y,2],kb)],c)], rs)
         gen [_,_,_] rs = ([],rs)
-        gen _       _  = error_
-model_gen _ _ _ = error_
+        gen _       _  = error "Z2Gauge"
+model_gen _ _ _ = error "model_gen"
 
 model_gen_apply_gamma :: Double -> ([Int],ModelGen) -> ([Int],ModelGen)
 model_gen_apply_gamma gamma (ls,gen) = (ls, mapFst (map $ mapSnd $ gamma==0 ? (boole . (/=0)) $ (`powF` gamma)) .* gen)
@@ -1157,7 +1212,7 @@ get_majHistos'RG = error_
 
 -- type Meta'G           = Maybe IntSet
 -- default_meta'G        = Nothing
--- merge_meta'G          = forceF .* liftM2 xor'IntSet
+-- merge_meta'G          = myForce .* liftM2 xor'IntSet
 -- g4s_meta'G            = set_maj'G []
 -- type Meta'RG          = [MajHisto] -- [RG step -> [(# majorana, [coefficients])]]
 -- init_meta'RG rg       = [calc_majHisto rg]
@@ -1207,7 +1262,8 @@ prettyPrint = False
 
 main :: IO ()
 main = do
-  let defQ           = if' True
+  let defQ           = curry snd
+      alterSeedQ     = defQ False True
       ternaryQ       = defQ False False
       small_lsQ      = defQ False False
       calc_EEQ       = defQ True  True
@@ -1216,7 +1272,7 @@ main = do
       detailedQ      = defQ False False
       cut_powQ       = defQ True  True
       keep_diagQ     = defQ True  False
-      lrmiQ          = defQ False True
+      lrmiQ          = defQ False False
       
       max_rg_terms_default    = calc_aCorr'Q ? "32" $ "16"
       max_wolff_terms_default = "4"
@@ -1233,13 +1289,14 @@ main = do
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
     :: IO (Int, Model, [Int], [F], Double, Int, Int)
   
-  let max_rg_terms    = justIf (>=0) max_rg_terms_
-      max_wolff_terms = justIf (>=0) max_wolff_terms_
+  let max_rg_terms    = justIf' (>=0) max_rg_terms_
+      max_wolff_terms = justIf' (>=0) max_wolff_terms_
       ls0      = small_lsQ ? ln2_ls $ map (2^) ln2_ls
       ls       = ls'RG rg0
       n        = n'RG  rg0
       z        = n // product ls0
-      rg0      = init'RG model $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
+      seed'    = if' (not alterSeedQ) seed $ Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
+      rg0      = init'RG model ls0 $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = not ternaryQ && keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
                                max_rg_terms'RG    = max_rg_terms,
@@ -1256,6 +1313,7 @@ main = do
   putStr "couplings:          "; print couplings
   putStr "Γ:                  "; print gamma
   putStr "seed:               "; print seed
+  putStr "seed':              "; print seed'
   putStr "max RG terms:       "; print max_rg_terms
   putStr "max Anderson terms: "; print max_wolff_terms
   putStr "float type:         "; print type_F
@@ -1349,7 +1407,7 @@ main = do
         entanglement_map = Map.fromListWith error_ $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
         lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
-                                       justIf (const$x/=0) $ (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
+                                       justIf (x>=l) (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
     
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ mapMeanError entanglement_data
@@ -1359,7 +1417,7 @@ main = do
     
     when lrmiQ $ do
       putStrLn "LRMI: "
-      mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> if' (l==l0 && x>=head ls//4) (Just (x,e,de)) Nothing) lrmi_data) | l0 <- init $ init $ xs]
+      mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
   
 --   putStr "entanglement entropies: " -- [(region size, region separation, [entanglement entropies])]
 --   print $ ee1d_ [1..last xs] [0] $ stab'RG rg
@@ -1388,6 +1446,8 @@ main = do
   when (has_majQ && model == XYZ) $ do
     putStr "majorana histo: "
     print $ cut_pow2 $ tail $ get_majHistos'RG rg
+  
+--   print $ length $ show rg
   
   putStr "CPU time: "
   cpu_time <- getCPUTime

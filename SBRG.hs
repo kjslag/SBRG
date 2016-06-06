@@ -19,6 +19,7 @@ import GHC.Exts (groupWith, sortWith, the)
 
 import Control.Exception.Base (assert)
 import Control.Monad
+import Data.Bifunctor
 import Data.Bits
 import Data.Coerce
 import Data.Either
@@ -114,20 +115,11 @@ snd3 (_,y,_) = y
 thd3 :: (a,b,c) -> c
 thd3 (_,_,z) = z
 
-mapPair :: (a -> a', b -> b') -> (a,b) -> (a',b')
-mapPair (f,g) (x,y) = (f x, g y)
+both :: (a -> b) -> (a,a) -> (b,b)
+both f = bimap f f
 
-mapBoth :: (a -> b) -> (a,a) -> (b,b)
-mapBoth f = mapPair (f,f)
-
-mapFst :: (a -> a') -> (a,b) -> (a',b)
-mapFst f = mapPair (f, id)
-
-mapSnd :: (b -> b') -> (a,b) -> (a,b')
-mapSnd f = mapPair (id, f)
-
-mapThd3 :: (c -> c') -> (a,b,c) -> (a,b,c')
-mapThd3 f (x,y,z) = (x,y,f z)
+third :: (c -> c') -> (a,b,c) -> (a,b,c')
+third f (x,y,z) = (x,y,f z)
 
 uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
 uncurry3 f (x,y,z) = f x y z
@@ -141,7 +133,7 @@ foldl'_ = flip . foldl' . flip
 
 partitions :: Int -> [a] -> [[a]]
 partitions _ [] = []
-partitions n xs = uncurry (:) $ mapSnd (partitions n) $ splitAt n xs
+partitions n xs = uncurry (:) $ second (partitions n) $ splitAt n xs
 
 newtype NestedFold t1 t2 a = NestedFold { getNestedFold :: t1 (t2 a) }
 
@@ -328,7 +320,7 @@ instance Show LogFloat where
           yDouble = s ? exp y $ -exp y
 
 instance Read LogFloat where
-  readsPrec = map (mapFst fromDouble'LF) .* readsPrec
+  readsPrec = map (first fromDouble'LF) .* readsPrec
 
 instance Eq LogFloat where
   (==) = (==EQ) .* compare
@@ -428,10 +420,8 @@ rankZ2 = go 0 . fromSymmetric'Z2Mat
                     Nothing -> mat
                     Just is -> IntSet.foldl' (flip $ xorRow'Z2Mat row) mat is
 
--- rankZ2_ :: [IntSet] -> Int
--- 
--- rankZ2_old :: [[Bool]] -> Int
--- rankZ2_old = rankZ2_ . map (IntSet.fromList . map fst . filter snd . zip [0..])
+rankZ2_old' :: [[Bool]] -> Int
+rankZ2_old' = rankZ2 . IntMap.fromListWith error_ . zip [0..] . map (IntSet.fromList . map fst . filter snd . zip [0..])
 
 rankZ2_old :: [[Bool]] -> Int
 rankZ2_old = go 0 . map (foldl' (\x b -> 2*x + boole b) 0)
@@ -527,13 +517,13 @@ check'Sigma :: Sigma -> Bool
 check'Sigma g = all (\k -> 1<=k && k<=3) $ IntMap.elems $ ik'G g
 
 toList'GT :: SigmaTerm -> ([(Int,Int)],F)
-toList'GT = mapFst $ IntMap.toList . ik'G
+toList'GT = first $ IntMap.toList . ik'G
 
 toLists'GT :: [Int] -> SigmaTerm -> ([([Int],Int)],F)
-toLists'GT ls = (mapFst $ map $ mapFst $ xs_i ls) . toList'GT
+toLists'GT ls = (first $ map $ first $ xs_i ls) . toList'GT
 
 fromList'GT :: Int -> ([(Int,Int)],F) -> SigmaTerm
-fromList'GT iD = mapFst $ \g -> sigma iD $ IntMap.fromListWith (error $ "fromList'GT: " ++ show g) g
+fromList'GT iD = first $ \g -> sigma iD $ IntMap.fromListWith (error $ "fromList'GT: " ++ show g) g
 
 show'GTs :: [SigmaTerm] -> String
 show'GTs = if' prettyPrint (concat . intersperse " + " . map (\(g,c) -> show c ++ " σ" ++ show g)) show
@@ -629,8 +619,9 @@ c4s :: F -> [Sigma] -> SigmaTerm -> SigmaTerm
 c4s dir g4s gT = foldl' (\gT'@(!g',!c') g4 -> maybe gT' (scale'GT $ dir*c') $ c4 g4 g') gT g4s
 
 localQ'Sigma :: Int -> Sigma -> Bool
-localQ'Sigma n = \g -> IntMap.size (ik'G g) < sqrt_n
-  where sqrt_n = round $ sqrt $ (fromIntegral n :: Double)
+localQ'Sigma n = \g -> IntMap.size (ik'G g) < round max_n
+  where max_n = sqrt $ fromIntegral n :: Double
+--where max_n = log (fromIntegral n) / log 2 + 16 :: Double
 
 -- MapGT
 
@@ -776,7 +767,7 @@ c4'Ham :: F -> Sigma -> Ham -> Ham
 c4'Ham dir g4 ham = uncurry (+#) $ foldl' delSigma (ham,[]) $ map fst $ acommCandidates g4 ham
   where delSigma (!ham0,!gTs) g = case c4 g4 g of
                                        Nothing      -> (ham0,gTs)
-                                       Just (g',c') -> mapSnd (\c -> (g',dir*c*c'):gTs) $ deleteLookup'Ham g ham0
+                                       Just (g',c') -> second (\c -> (g',dir*c*c'):gTs) $ deleteLookup'Ham g ham0
 
 -- TODO one could transpose (ie apply all c4 to one Sigma at a time instead of one c4 to all Sigma) this function by calculating the locality of the g4s
 c4s'Ham :: F -> [Sigma] -> Ham -> Ham
@@ -883,7 +874,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
             calc_size = IntMap.size . ik'G . fst . c4s (-1) (g4s'RG rg) . (,0)
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
   --unusedIs_ = IntMap.fromSet (const ()) unusedIs
-  --i3        = snd $ the $ until (null . drop 1) (\is -> let is' = filter (even . fst) is in map (mapFst (flip div 2)) $ null is' ? is $ is') $ map (\i -> (i,i))
+  --i3        = snd $ the $ until (null . drop 1) (\is -> let is' = filter (even . fst) is in map (first (flip div 2)) $ null is' ? is $ is') $ map (\i -> (i,i))
     i3        = useSimple_i3 ? IntSet.findMin unusedIs
               $ fst $ maximumBy (comparing snd) $ (\is -> zipExact is $ modDifferences (n'Ham ham1) is)
               $ IntSet.toList $ IntSet.intersection (IntMap.keysSet $ ik'G g3) unusedIs
@@ -898,8 +889,9 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     ham2             = c4s'Ham 1 g4s_ ham1
                     -- get g3' coefficient
     h3'              = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
-                    -- find sigma matrices that overlap with g3', split into diagonal matrices (diag') and anticommuting commutators (_G1)
-    (diag',_G1)      = mapFst (filter isDiag) $ partitionEithers
+                    -- find sigma matrices that overlap with g3'
+                    -- split into diagonal matrices (diag') and anticommuting commutators (_G1)
+    (diag',_G1)      = first (filter isDiag) $ partitionEithers
                      $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
                      $ toList'MAS $ nearbySigmas i3 ham2              -- the minus is because we apply icomm twice
                     -- remove anticommuting matrices from ham
@@ -908,7 +900,8 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     _G_Delta         = [(icomm_sorted'Ham (g,1) ham3', c) | (g,c) <- map fst _G1]
                        where ham3' = delete'Ham g3' ham3
                     -- calc offdiag error
-    offdiag_error    = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst) $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
+    offdiag_error    = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst)
+                     $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
                     -- remove diagonal matrices from ham
     ham4             = flip deleteSigmas'Ham ham3 $ map fst diag'
                     -- distribute _G1
@@ -952,7 +945,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     find_G4s :: Sigma -> Sigma -> [Sigma]
     find_G4s g0 g1 = maybe (g0 == g1 ? [] $ assert (acommQ g_ g1 && acommQ g0 g_) $ find_G4s g_ g1 ++ find_G4s g0 g_) (pure . fst) $ icomm g0 g1
       where g_        = sigma 0 $ useSimple_i3 ? g_' $ IntMap.singleton i3 1
-            (i0s,i1s) = mapBoth (IntSet.intersection unusedIs . IntMap.keysSet . ik'G) (g0,g1)
+            (i0s,i1s) = both (IntSet.intersection unusedIs . IntMap.keysSet . ik'G) (g0,g1)
             i01s      = IntSet.intersection i0s i1s
             is        = map IntSet.findMin $ IntSet.null i01s ? [i0s,i1s] $ [i01s]
             g_'       = IntMap.fromListWith error_ $ [(i, head $ [1,2,3] \\ map (IntMap.findWithDefault 0 i . ik'G) [g0,g1]) | i <- is]
@@ -1088,7 +1081,7 @@ init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ conc
                                 $ flip State.evalState (randoms seed) $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
 
-data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | ToricCode | Z2Gauge | Fibonacci
+data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | Haldane | HaldaneOpen | Cluster | ClusterOpen | ToricCode | Z2Gauge | Fibonacci
   deriving (Eq, Show, Read, Enum)
 
 -- basic_gen :: [Int] -> ([([([Int],Int)],F)],a) -> ([Int],([SigmaTerm],a))
@@ -1120,31 +1113,19 @@ model_gen Ising ls [j,k,h] = basic_gen ls gen
         gen _ _ = error "Ising"
 model_gen XYZ ls j = (ls, gen)
   where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
-          ([ set_maj'G (maj x k) & mapFst $ fromList'GT 0 ([(i_xs ls [x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3]], rs)
+          ([ set_maj'G (maj x k) & first $ fromList'GT 0 ([(i_xs ls [x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3]], rs)
         gen _ _ = error "XYZ"
         maj x 3 = maj x 1 ++ maj x 2
         maj x k = let b = boole (even x == (k==2)) in map (flip mod $ 2*the ls) [2*x+b,2*(x+1)+b]
 model_gen XYZ2 ls js | length js == 3*3 = basic_gen ls gen -- [jx,jy,jz,jx2,jy2,jz2,jx',jy',jz']
   where gen [x] rs_ = let [j,j2,j'] = partitions 3 js
-                          ([r,r2,r'],rs) = mapFst (partitions 3) $ splitAt (3*3) rs_ in
+                          ([r,r2,r'],rs) = first (partitions 3) $ splitAt (3*3) rs_ in
           (concat [concat [
             [([([x  ],k+1),([x+1],k+1)], j !!k * r !!k),
              ([([x-1],k+1),([x+1],k+1)], j2!!k * r2!!k)],
             [([([x+i],mod (k+p*i) 3 +1) | i<-[-1..1]], j'!!k * r'!!k) | p<-[-1,1]] ]| k<-[0..2]], rs)
         gen _ _ = error "XYZ2"
 model_gen XYZ2 ls [jx,jy,jz] = model_gen XYZ2 ls [jx,jy,jz,0.1,0,0,0,0,0]
--- model_gen XYZ2 ls j@[_,_,_] = model_gen XYZ2 ls $ concat [map (*f) j | f <- [1,0.5,0]]
--- model_gen MajChain [lx] couplings = model_gen MajChain [lx,1] couplings
--- model_gen MajChain ls [t,t',h] = (ls++[3], gen)
---   where (k1,k3, kh) = (1,3, 3)
---         gen [i,a,0] (rt1:rt2:rt'1:rt'2:rh1:rh2:rs) =
---             ([ (             ik1,t *rt1 ), (             ik2, t *rt2 ),   ([([i,a,1],kh)],-h*rh1),
---                (([i,a,1],kh):ik1,t'*rt'1), (([i,a,2],kh):ik2,-t'*rt'2),   ([([i,a,2],kh)],-h*rh2) ], rs)
---           where ik1 = [([i,a,0],k3)]
---                 ik2 = [([i,a,0],k1),([i+1,a,0],k1)]
---         gen [_,7,_] _  = error_
---         gen [_,_,_] rs = ([], rs)
---         gen _ _ = error_
 model_gen MajChain ls [t,   g   ] = model_gen MajChain ls [t,t,g,g]
 model_gen MajChain ls [t,t',g,g'] = basic_gen ls gen
   where (kt,kt') = (3,1) -- corr_z_xs_ggs depends on this
@@ -1155,6 +1136,24 @@ model_gen MajChain ls [t,t',g,g'] = basic_gen ls gen
               ([([x],kt'),([x+2],kt')],  g'*rg')
             ], rs)
         gen _ _ = error "MajChain"
+model_gen model ls [j,j'] | model == Haldane || model == HaldaneOpen = basic_gen (ls++[2]) gen
+  where gen [x,0] rs_ =  let ((r,r'),rs) = first (splitAt 3) $ splitAt 6 rs_ in
+          ( [([([x,1],k),([x,2],k)],j*r!!(k-1)) | k <- [1..3]] ++
+            ( model == HaldaneOpen && x == head ls-1 ? []
+            $ [([([x,2],k),([x+1,1],k)],j'*r!!(k-1)) | k <- [1..3]])
+           , rs)
+        gen [_,1] rs = ([],rs)
+        gen _     _  = error $ show model
+model_gen model ls [a,b,b'] | model == Cluster || model == ClusterOpen = basic_gen ls gen
+  where (ka,kb) = (3,1)
+        gen [x] (   rb:rs) | model == ClusterOpen && elem x [0,head ls-1] =
+          ([ ([([x],ka)],(even x ? b $ b')*rb)
+           ],rs)
+        gen [x] (ra:rb:rs) =
+          ([ ([([x-1],kb),([x],ka),([x+1],kb)],a*ra),
+             ([([x],ka)],(even x ? b $ b')*rb)
+           ], rs)
+        gen _ _ = error $ show model
 model_gen ToricCode ls [a,b',b,a'] = basic_gen (ls++[2]) gen
   where (ka,kb) = (3,1)
         gen [x,y,0] (ra:rb:ra'1:ra'2:rb'1:rb'2:rs) =
@@ -1175,7 +1174,7 @@ model_gen Z2Gauge ls [a,b',b,a'] = basic_gen (ls++[3]) gen
 model_gen _ _ _ = error "model_gen"
 
 model_gen_apply_gamma :: Double -> ([Int],ModelGen) -> ([Int],ModelGen)
-model_gen_apply_gamma gamma (ls,gen) = (ls, mapFst (map $ mapSnd $ gamma==0 ? (boole . (/=0)) $ (`powF` gamma)) .* gen)
+model_gen_apply_gamma gamma (ls,gen) = (ls, first (map $ second $ gamma==0 ? (boole . (/=0)) $ (`powF` gamma)) .* gen)
 
 -- [bins (upper bound)] -> [(bin,x)] -> [(bin,xs)]
 generic_histo_ :: [Int] -> [(Int,a)] -> [(Int,[a])]
@@ -1233,8 +1232,8 @@ type MajHisto = [(Int,[F])]
 -- type MajHisto = [(Int,Int)]
 
 calc_majHisto :: RG -> MajHisto
-calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (mapFst $ IntSet.size . get_maj'G) . Map.toList . gc'Ham . ham'RG
--- calc_majHisto = map (\xs -> (fst $ head xs, length xs)) . groupWith fst . map (mapFst $ IntSet.size . get_maj'G) . Map.toList . gc'Ham . ham'RG
+calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (first $ IntSet.size . get_maj'G) . Map.toList . gc'Ham . ham'RG
+-- calc_majHisto = map (\xs -> (fst $ head xs, length xs)) . groupWith fst . map (first $ IntSet.size . get_maj'G) . Map.toList . gc'Ham . ham'RG
 
 -- float type
 
@@ -1262,19 +1261,8 @@ prettyPrint = False
 
 main :: IO ()
 main = do
-  let defQ           = curry snd
-      alterSeedQ     = defQ False True
-      ternaryQ       = defQ False False
-      small_lsQ      = defQ False False
-      calc_EEQ       = defQ True  True
-      calc_aCorrQ    = defQ True  False
-      calc_aCorr'Q   = defQ True  False
-      detailedQ      = defQ False False
-      cut_powQ       = defQ True  True
-      keep_diagQ     = defQ True  False
-      lrmiQ          = defQ False False
-      
-      max_rg_terms_default    = calc_aCorr'Q ? "32" $ "16"
+  let small_lsQ               = False
+      max_rg_terms_default    = "32"
       max_wolff_terms_default = "4"
   
   args <- getArgs
@@ -1288,6 +1276,17 @@ main = do
   
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
     :: IO (Int, Model, [Int], [F], Double, Int, Int)
+  
+  let defQ           = curry snd
+      alterSeedQ     = defQ False False
+      ternaryQ       = defQ False False
+      calc_EEQ       = defQ True  True
+      calc_aCorrQ    = model /= ToricCode
+      calc_aCorr'Q   = length ln2_ls <= 1
+      detailedQ      = defQ False False
+      cut_powQ       = defQ True  True
+      keep_diagQ     = length ln2_ls <= 1
+      lrmiQ          = defQ False False
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
       max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1307,16 +1306,17 @@ main = do
   
   unless (0 < n) $ error_
   
-  putStr "version:            "; putStrLn "160517.0" -- year month day . minor
-  putStr "model:              "; print $ show model
-  putStr "Ls:                 "; print ls0
-  putStr "couplings:          "; print couplings
-  putStr "Γ:                  "; print gamma
-  putStr "seed:               "; print seed
-  putStr "seed':              "; print seed'
-  putStr "max RG terms:       "; print max_rg_terms
-  putStr "max Anderson terms: "; print max_wolff_terms
-  putStr "float type:         "; print type_F
+  putStr   "version:            "; putStrLn "160606.0" -- year month day . minor
+  putStr   "model:              "; print $ show model
+  putStr   "Ls:                 "; print ls0
+  putStr   "couplings:          "; print couplings
+  putStr   "Γ:                  "; print gamma
+  putStr   "seed:               "; print seed
+  putStr   "seed':              "; print seed'
+  putStr   "max RG terms:       "; print max_rg_terms
+  when calc_aCorr'Q $ do
+    putStr "max Anderson terms: "; print max_wolff_terms
+  putStr   "float type:         "; print type_F
   
   when detailedQ $ do
     putStr "Hamiltonian: "
@@ -1328,7 +1328,7 @@ main = do
   
   putStr "missing stabilizers: "
   print $ n_missing
---mapM_ print $ map (toLists'GT ls) $ take n_missing ordered_stab
+--mapM_ print $ map (toLists'GT ls) $ take 2 ordered_stab
   
   unless ternaryQ $ do
     putStr "Wolff errors: "
@@ -1373,7 +1373,7 @@ main = do
         
         -- [(bin upper bound, #, RSS of coefficients, sum of logs, max)]
         generic_histo :: [Int] -> (Sigma -> Int) -> [(Sigma,F)] -> [(Int,Int,F,Double,F)]
-        generic_histo ns f = map (\(n0,cs) -> (n0,length cs,rss cs, sum $ map (logF . abs) $ filter (/=0) cs, maximum $ map abs $ 0:cs)) . generic_histo_ ns . map (mapFst f)
+        generic_histo ns f = map (\(n0,cs) -> (n0,length cs,rss cs, sum $ map (logF . abs) $ filter (/=0) cs, maximum $ map abs $ 0:cs)) . generic_histo_ ns . map (first f)
         
         length_histo :: [Int] -> [(Sigma,F)] -> [(Int,Int,F,Double,F)] -- TODO d>1
         length_histo ns = generic_histo ns $ length'Sigma l
@@ -1389,11 +1389,11 @@ main = do
             print $ length_histo nsL gcs
             
             putStr $ name ++ " size-length histo: "
-            print $ map (mapSnd $ length_histo nsL) $ generic_histo_ nsS' $ map (\gT@(g,_) -> (IntMap.size $ ik'G g, gT)) gcs
+            print $ map (second $ length_histo nsL) $ generic_histo_ nsS' $ map (\gT@(g,_) -> (IntMap.size $ ik'G g, gT)) gcs
     
     putStr "small stabilizers: " 
-    print $ map (mapFst $ IntMap.size . ik'G)
-          $ uncurry (++) $ mapSnd (take 20) $ span ((==0) . snd) $ sortWith (abs . snd) $ toList'Ham $ stab'RG rg
+    print $ map (first $ IntMap.size . ik'G)
+          $ uncurry (++) $ second (take 20) $ span ((==0) . snd) $ sortWith (abs . snd) $ toList'Ham $ stab'RG rg
     
     all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ Map.toList  $  gc'Ham  $  stab'RG rg
     all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $ Map.toList <$> gc'Ham <$> diag'RG rg
@@ -1412,6 +1412,45 @@ main = do
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ mapMeanError entanglement_data
     
+--     let a = IntSet.fromList [0..1]
+--         c = IntSet.fromList [4..5]
+--         b = IntSet.fromList [head ls - i | i <- [1..2]]
+--         s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--     putStr "I(A:B): "
+--     print $ s[a] + s[b] - s[a,b]
+--     putStr "I(A:B:C): "
+--     print $ s [a] + s [b] + s [c] - s [a,b] - s [b,c] - s [c,a] + s[a,b,c]
+--     putStr "I(A:B|C): "
+--     print $ s [a,c] + s [b,c] - s [a,b,c] - s[c]
+    
+--     let a = IntSet.fromList [    2,3]
+-- --         c = IntSet.fromList [0,1,    4,5,   8,9,      12,13]
+--         c = IntSet.fromList [        4,5,             12,13]
+-- --         c = IntSet.fromList [        4,5,   8,9          ]
+--         b = IntSet.fromList [                   10,11]
+--         s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--     putStr "I(A:B): "
+--     print $ s[a] + s[b] - s[a,b]
+--     putStr "I(A:B:C): "
+--     print $ s [a] + s [b] + s [c] - s [a,b] - s [b,c] - s [c,a] + s[a,b,c]
+--     putStr "I(A:B|C): "
+--     print $ s [a,c] + s [b,c] - s [a,b,c] - s[c]
+    
+--     print $ [(lx,ly,-2*(fromIntegral$lx+ly) + ee_slow (IntSet.fromList [i_xs ls [x,y,a] | x <-[1..lx], y<-[1..ly], a<-[0,1]]) (stab'RG rg)) |
+--               lx <- [2,4,8], ly <- [2,4,8] ]
+--     do
+--       let a = IntSet.fromList [i_xs ls [x,y,q] | x<-[1..3], y<-[1..4], q<-[0,1]]
+--           b = IntSet.fromList [i_xs ls [x,y,q] | x<-[4..7], y<-[1..2], q<-[0,1]]
+--           c = IntSet.fromList [i_xs ls [x,y,q] | x<-[4..7], y<-[3..4], q<-[0,1]]
+--           s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--       print $ (s [a], s [a,b], s [a,b,c])
+--       print $ s [a] + s [b] + s [c] - s [a,b] - s [b,c] - s [c,a] + s[a,b,c]
+--       let a  = IntSet.fromList [i_xs ls [x,y,q] | x<-[1..2], y<-[1..6], q<-[0,1]]
+--           b  = IntSet.fromList [i_xs ls [x,y,q] | x<-[5..6], y<-[1..6], q<-[0,1]]
+--           c  = IntSet.fromList [i_xs ls [x,y,q] | x<-[3..4], y<-[1,2,5,6], q<-[0,1]]
+--           s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--       print $ s [a,c] + s [b,c] - s [a,b,c] - s[c]
+    
     putStr "long range mutual information: "
     print $ lrmi_data
     
@@ -1422,7 +1461,7 @@ main = do
 --   putStr "entanglement entropies: " -- [(region size, region separation, [entanglement entropies])]
 --   print $ ee1d_ [1..last xs] [0] $ stab'RG rg
   
-  let corr_z_xs_ggs = mapThd3 (map $ mapBoth $ sigma 0 . IntMap.fromListWith error_) $ case model of
+  let corr_z_xs_ggs = third (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
         ToricCode -> wilson_z_xs_ggs
         Z2Gauge   -> wilson_z_xs_ggs
         MajChain  -> let (a,b,c,d) = ([(0,3)], [(0,1),(1,1)], [(0,3),(1,3)], [(0,1),(2,1)])

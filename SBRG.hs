@@ -1103,12 +1103,14 @@ model_gen RandFerm ls [p] = (ls, gen)
         gen  _  _  = error "RandFerm"
         gen' (terms,rp:rh:rs') g = (if' (rp<p) [fromList'GT 0 (g,rh)] [] ++ terms, rs')
         gen' _                 _ = error_
-model_gen Ising ls [j,k,h] = basic_gen ls gen
+model_gen Ising ls [j,k,h      ] = model_gen Ising ls [j,k,h,0 ,0]
+model_gen Ising ls [j,k,h,h1   ] = model_gen Ising ls [j,k,h,h1,0]
+model_gen Ising ls [j,k,h,h1,h2] = basic_gen ls gen
   where (kj,kh) = (3,1)
-        gen [x] (rj:rk:rh:rs) =
-          ([ ([([x],kj),([x+1],kj)],j*rj), ([([x],kh),([x+1],kh)],k*rk), ([([x],kh)],h*rh) ], rs)
-        gen [x,y] (rjx:rjy:rkx:rky:rh:rs) =
-          ([ ([([x,y],kj),([x+1,y  ],kj)],j*rjx), ([([x,y],kh),([x+1,y  ],kh)],k*rkx), ([([x,y],kh)],h*rh),
+        gen [x] (rj:rk:rh:rh1:rh2:rs) =
+          ([ ([([x],kj),([x+1],kj)],j*rj), ([([x],kh),([x+1],kh)],k*rk), ([([x],kh)],h*rh), ([([x],kj)],h1*rh1), ([([x],kj)],h2*rh2) ], rs)
+        gen [x,y] (rjx:rjy:rkx:rky:rh:rh1:rh2:rs) =
+          ([ ([([x,y],kj),([x+1,y  ],kj)],j*rjx), ([([x,y],kh),([x+1,y  ],kh)],k*rkx), ([([x,y],kh)],h*rh), ([([x,y],kj)],h1*rh1), ([([x,y],kj)],h2*rh2),
              ([([x,y],kj),([x  ,y+1],kj)],j*rjy), ([([x,y],kh),([x  ,y+1],kh)],k*rky) ], rs)
         gen _ _ = error "Ising"
 model_gen XYZ ls j = (ls, gen)

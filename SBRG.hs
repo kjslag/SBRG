@@ -956,10 +956,10 @@ stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG r
 runRG :: RG -> RG
 runRG = until (IntSet.null . unusedIs'RG) rgStep
 
--- return: 1 == RMS of <g>^2 over all eigenstates
+-- return: RMS of <g> over all eigenstates
 -- Ham: the stabilizer Ham
-rmsQ :: Ham -> Sigma -> Bool
-rmsQ stab g0 = not $ null $ acommSigmas g0 stab
+rms'G :: Ham -> Sigma -> Double
+rms'G stab g0 = boole $ null $ acommSigmas g0 stab
 
 anderson_corr :: Int -> [Int] -> [(Sigma,Sigma)] -> Ham -> [(Int,[(Double,Double)])]
 anderson_corr  z xs ggs stab = [(x, [anderson_corr_ stab $ map snd $ anderson_corr_gs_ z x gg $ ls'Ham stab | gg <- ggs]) | x <- xs]
@@ -980,7 +980,7 @@ anderson_corr_gs_ z x0 (g0,g0') ls | isJust gg = [(i, g_ i) | i <- [0,z..n-1]]
 
 anderson_corr_ :: Ham -> [      IntMap Int ] -> (Double,Double)
 anderson_corr_ _    [] = (0,0)
-anderson_corr_ stab gs = meanError $ map (boole . rmsQ stab . sigma 0) gs
+anderson_corr_ stab gs = meanError $ map (rms'G stab . sigma 0) gs
 
 anderson_corr'_ :: RG -> [(Int, IntMap Int)] -> (F,F)
 anderson_corr'_ _  [] = (0,0)
@@ -1274,7 +1274,7 @@ main = do
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
     :: IO (Int, Model, [Int], [F], Double, Int, Int)
   
-  let alterSeedQ     = False
+  let alterSeedQ     = True
       ternaryQ       = False
       calc_EEQ       = True
       calc_aCorrQ    = model /= ToricCode
@@ -1283,7 +1283,7 @@ main = do
       cut_powQ       = True
       keep_diagQ     = length ln2_ls <= 1
       lrmiQ          = False
-      calc_corrLen   = True
+      calc_momentsQ  = True
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
       max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1421,27 +1421,25 @@ main = do
       putStrLn "LRMI: "
       mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
   
-  when calc_corrLen $ do
-    let ijs = take (25*n0) $ pairs $ Random.randomRs (0,n0) $ Random.mkStdGen $ Hashable.hash (seed'_, "calc_corrLen ijs")
-          where pairs = \(i:j:ijs_) -> (i,j) : pairs ijs_
-        l0 = head ls0
-        qs = [0..2]
-        structure_factor :: (Int -> Int -> Double) -> [(Int,Double,Double)]
-        structure_factor f = zipWithExact (\q (s,ds) -> (q,s,ds)) qs $ map meanError $ transpose
-                           $ [ [ cos_ * f0
-                               | q <- qs,
-                                 let k0  = 2*pi/fromIntegral l0
-                                     cos_ = mean $ map (\x -> cos $ k0 * fromIntegral (q*x)) dxs ]
-                             | (i,j) <- ijs,
-                               let f0  = f i j
-                                   dxs = catMaybes $ zipWith justIf (map (==l0) ls0) $ (zipWithExact (-) `on` xs_i ls) i j ]
+  when calc_momentsQ $ do
+    let rand_iss n_ = take (10*n) $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed'_, "moments", n_)
+          where groups = (\(is0,is') -> is0 : groups is') . splitAt n_
+        calc_moments :: [Int] -> ([Int] -> Double) -> [(Int,Double,Double)]
+        calc_moments ns_ f = [ uncurry (n_,,) $ meanError $ map f $ rand_iss n_ | n_ <- ns_ ]
+--  
+    putStr "mutual information moments: " -- [(n, avg MI(i1,..,in), error)]
+    print $ calc_moments [2,3,4,6] $ let ee is = ee_slow (IntSet.fromList is) (stab'RG rg)
+                                         drops [] = []
+                                         drops (i:is) = is : map (i:) (drops is)
+                                     in \is -> sum (map ee $ drops is) - (fromIntegral (length is) - 1) * ee is
     
-    putStr "mutual information structure factor: " -- [(q,MI(q), error) | q <- [(0,0),(1,0),(2,0)]]
-    print $ structure_factor $ let ee is = ee_slow (IntSet.fromList is) (stab'RG rg)
-                               in \i j -> ee [i] + ee [j] - ee [i,j]
+    putStr "anderson moments: " -- [(n, avg <Q_i1 .. Q_in>^2, error)]
+    print $ calc_moments [2,4,8] $ \is -> let f0 = (rms'G (stab'RG rg) . foldl1 (snd .* multSigma) . map (sigma 0 . flip IntMap.singleton 3)) is -- TODO ToricCode
+                                          in if' (f0 == 0) (traceShow $ is) id $ f0
+  print $ stab'RG rg
   
--- ee_slow :: IntSet -> Ham -> Double
--- andedrson_corr_ :: Ham -> [      IntMap Int ] -> (Double,Double)
+--ee_slow :: IntSet -> Ham -> Double
+--anderson_corr_ :: Ham -> [      IntMap Int ] -> (Double,Double)
   
   let corr_z_xs_ggs = third (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
         ToricCode -> wilson_z_xs_ggs

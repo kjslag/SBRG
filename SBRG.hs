@@ -225,7 +225,7 @@ isPow2 :: Int -> Bool
 isPow2 x = popCount x == 1
 
 mean :: Floating f => [f] -> f
-mean xs = sum xs / (fromIntegral $ length xs)
+mean xs = sum xs / genericLength xs
 
 rms :: Floating f => [f] -> f
 rms = sqrt . mean . map sq
@@ -235,7 +235,7 @@ rss = sqrt . sum . map sq
 
 meanError :: Floating f => [f] -> (f, f)
 meanError xs  = (mean0, sqrt $ (sum $ map (sq . (mean0-)) xs) / ((n-1)*n) )
-  where n     = fromIntegral $ length xs
+  where n     = genericLength xs
         mean0 = sum xs / n
 
 epsilon, epsilon_2 :: Fractional f => f
@@ -288,8 +288,8 @@ instance (MySeq a, MySeq b) => MySeq (Either a b) where
 
 data LogFloat = LogFloat !Bool !Double
 
--- note: don't define toDouble'LF
--- only showsPrec can use it safely
+toDouble'LF :: LogFloat -> Double
+toDouble'LF (LogFloat s y) = s ? exp y $ -exp y
 
 fromDouble'LF :: Double -> LogFloat
 fromDouble'LF x = LogFloat (not $ x<0 || isNegativeZero x) (log $ abs x)
@@ -309,15 +309,14 @@ isNaN'LF (LogFloat _ y) = isNaN y
 instance MySeq LogFloat
 
 instance Show LogFloat where
-  showsPrec n (LogFloat s y) str
+  showsPrec n z@(LogFloat s y) str
     | abs y > 600 && not (isInfinite y || isNaN y)
       = if' s "" "-" ++ (abs y > recip epsilon
                         ? "10^" ++ shows (y/ln10) str
                         $ shows (exp $ ln10*y') ('e' : shows (e::Integer) str) )
-    | otherwise = showsPrec n yDouble str
+    | otherwise = showsPrec n (toDouble'LF z) str
     where (e,y')  = properFraction $ y / ln10
           ln10    = log 10
-          yDouble = s ? exp y $ -exp y
 
 instance Read LogFloat where
   readsPrec = map (first fromDouble'LF) .* readsPrec
@@ -420,11 +419,20 @@ rankZ2 = go 0 . fromSymmetric'Z2Mat
                     Nothing -> mat
                     Just is -> IntSet.foldl' (flip $ xorRow'Z2Mat row) mat is
 
-rankZ2_old' :: [[Bool]] -> Int
-rankZ2_old' = rankZ2 . IntMap.fromListWith error_ . zip [0..] . map (IntSet.fromList . map fst . filter snd . zip [0..])
+rankZ2' :: [[Bool]] -> Int
+rankZ2' = rankZ2 . IntMap.fromListWith error_ . zip [0..] . map (IntSet.fromList . map fst . filter snd . zip [0..])
+
+boolsToInteger :: [Bool] -> Integer
+boolsToInteger = foldl' (\x b -> 2*x + boole b) 0
+
+symmeterize_rankZ2_old :: [[Bool]] -> Int
+symmeterize_rankZ2_old mat = rankZ2_old' $ (zipWithExact (+) `on` map boolsToInteger) mat (transpose mat)
 
 rankZ2_old :: [[Bool]] -> Int
-rankZ2_old = go 0 . map (foldl' (\x b -> 2*x + boole b) 0)
+rankZ2_old = rankZ2_old' . map boolsToInteger
+
+rankZ2_old' :: [Integer] -> Int
+rankZ2_old' = go 0
   where
     go :: Int -> [Integer] -> Int
     go  n []         = n
@@ -598,9 +606,6 @@ icomm g1 g2 = case mod n 4 of
                    _ -> error_
   where (n,g) = multSigma g1 g2
 
-icomm'GT :: SigmaTerm -> SigmaTerm -> Maybe SigmaTerm
-icomm'GT (g1,c1) (g2,c2) = scale'GT (c1*c2) <$> icomm g1 g2
-
 -- {a,b}/2
 acomm :: Sigma -> Sigma -> Maybe SigmaTerm
 acomm g1 g2 = case mod n 4 of
@@ -610,6 +615,12 @@ acomm g1 g2 = case mod n 4 of
                    3 -> Nothing
                    _ -> error_
   where (n,g) = multSigma g1 g2
+
+icomm'GT :: SigmaTerm -> SigmaTerm -> Maybe SigmaTerm
+icomm'GT (g1,c1) (g2,c2) = scale'GT (c1*c2) <$> icomm g1 g2
+
+acomm'GT :: SigmaTerm -> SigmaTerm -> Maybe SigmaTerm
+acomm'GT (g1,c1) (g2,c2) = scale'GT (c1*c2) <$> acomm g1 g2
 
 -- c4 g4 g = R^dg g R where R = (1 + i g4)/sqrt(2)
 c4 :: Sigma -> Sigma -> Maybe SigmaTerm
@@ -958,7 +969,7 @@ runRG = until (IntSet.null . unusedIs'RG) rgStep
 
 -- return: RMS of <g> over all eigenstates
 -- Ham: the stabilizer Ham
-rms'G :: Ham -> Sigma -> Double
+rms'G :: Num a => Ham -> Sigma -> a
 rms'G stab g0 = boole $ null $ acommSigmas g0 stab
 
 anderson_corr :: Int -> [Int] -> [(Sigma,Sigma)] -> Ham -> [(Int,[(Double,Double)])]
@@ -990,12 +1001,12 @@ anderson_corr'_ rg gs = meanError $ IntMap.elems $ IntMap.fromListWith (+) $ ([(
                 $ fromList'Ham (ls'RG rg) $ map (\(i,g) -> (sigma (i+1) g,1)) gs
 
 ee_slow :: IntSet -> Ham -> Double
-ee_slow is stab = (0.5*) $ fromIntegral $ rankZ2_old $ acommMat $
+ee_slow is stab = (0.5*) $ fromIntegral $ symmeterize_rankZ2_old $ acommMat $
     [sigma 0 g'
     | g <- map ik'G $ Map.keys $ gc'Ham stab,
       let g' = IntMap.intersection g $ IntMap.fromSet (const ()) is,
       not (IntMap.null g') && ((/=) `on` IntMap.size) g g']
-  where acommMat gs = [[acommQ g g' | g <- gs] | g' <- gs]
+  where acommMat gs = [replicate n False ++ [acommQ g g' | g' <- gs'] | (n, (g:gs')) <- zip [1..] (tails gs)] -- TODO tails
 
 ee1d_slow :: [Int] -> Ham -> [(Int,Double,Double)]
 ee1d_slow l0s = map (\(l0,_,ee,er) -> (l0,ee,er)) . ee1d_slow' l0s [0]
@@ -1009,6 +1020,13 @@ ee1d_slow' l0s x0s stab =
         lY      = product $ tail $ ls'Ham stab
         modn i  = mod i n
         is l0 x = IntSet.fromList $ map modn [x*lY..(x+l0)*lY-1]
+
+-- mutual information
+mutual_information :: [IntSet] -> Ham -> Double
+mutual_information regions stab = sum (map ee $ drop1s regions) - (genericLength regions - 1) * ee regions
+  where ee is         = ee_slow (IntSet.unions is) stab
+        drop1s []     = []
+        drop1s (x:xs) = xs : map (x:) (drop1s xs)
 
 -- entanglement entropy: arguments: list of region sizes and stabilizer Ham
 ee1d :: [Int] -> [Int] -> Ham -> [(Int,Int,Double,Double)]
@@ -1034,12 +1052,12 @@ ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s,
             selRegion g i = (if i+l<n then                fst . IntMap.split        (i+l)
                                       else IntMap.union $ fst $ IntMap.split (modn $ i+l) g)
                           $ snd $ IntMap.split (i-1) g
-            l          = l0*lY
+            l = l0*lY
     modx x = mod x lx
     modn i = mod i n
     acommMat :: [Sigma] -> IntMap IntSet
     acommMat gs  = foldl' f IntMap.empty gs
-      where  gs' = foldl' (flip insert'Ham) (zero'Ham $ ls'Ham stab) $ map (,1) gs
+      where  gs' = (zero'Ham $ ls'Ham stab) +# map (,1::F) gs
              add iD1 iD2 = IntMap.insertWith IntSet.union iD1 $ IntSet.singleton iD2
              f mat0 g0 = foldl'_ (\iD -> add iD0 iD . add iD iD0) iDs mat0
                where iDs = map iD'G $ filter (\g -> iD'G g < iD0 && acommQ g g0) $ map fst $ acommCandidates g0 gs'
@@ -1234,22 +1252,25 @@ calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (
 
 -- float type
 
-type_F :: String
-toF    :: Double -> F
-powF   :: F -> Double -> F -- preserves sign of base
-logF   :: F -> Double
+type_F   :: String
+toF      :: Double -> F
+toDouble :: F -> Double
+powF     :: F -> Double -> F -- preserves sign of base
+logF     :: F -> Double
 
--- type F = Double
--- type_F = "Double"
--- toF    = id
--- powF   = \x y -> signum x * (abs x ** y)
--- logF   = log
+-- type F   = Double
+-- type_F   = "Double"
+-- toF      = id
+-- toDouble = id
+-- powF     = \x y -> signum x * (abs x ** y)
+-- logF     = log
 
-type F = LogFloat
-type_F = "LogFloat"
-toF    = fromDouble'LF
-powF   = pow'LF
-logF   = log'LF
+type F   = LogFloat
+type_F   = "LogFloat"
+toF      = fromDouble'LF
+toDouble = toDouble'LF
+powF     = pow'LF
+logF     = log'LF
 
 -- main
 
@@ -1422,23 +1443,21 @@ main = do
       mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
   
   when calc_momentsQ $ do
-    let rand_iss n_ = take (10*n) $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed'_, "moments", n_)
+    let rand_iss n_ = take (2*n) $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed'_, "moments", n_)
           where groups = (\(is0,is') -> is0 : groups is') . splitAt n_
         calc_moments :: [Int] -> ([Int] -> Double) -> [(Int,Double,Double)]
         calc_moments ns_ f = [ uncurry (n_,,) $ meanError $ map f $ rand_iss n_ | n_ <- ns_ ]
---  
+        
+        mutual_information_moment is = case map IntSet.singleton $ IntSet.toList $ foldl1 xor'IntSet $ map IntSet.singleton is of
+                                            []      -> 1
+                                            regions -> mutual_information regions $ stab'RG rg
+        anderson_moment = uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . foldl1 (fromJust .* acomm'GT) . map ((,1) . sigma 0 . flip IntMap.singleton 3) -- TODO ToricCode
+    
     putStr "mutual information moments: " -- [(n, avg MI(i1,..,in), error)]
-    print $ calc_moments [2,3,4,6] $ let ee is = ee_slow (IntSet.fromList is) (stab'RG rg)
-                                         drop1s [] = []
-                                         drop1s (i:is) = is : map (i:) (drop1s is)
-                                     in \is -> sum (map ee $ drop1s is) - (fromIntegral (length is) - 1) * ee is
+    print $ calc_moments [2,3,4,6] mutual_information_moment
     
     putStr "anderson moments: " -- [(n, avg <Q_i1 .. Q_in>^2, error)]
-    print $ calc_moments [2,4,8] $ rms'G (stab'RG rg) . foldl1 (snd .* multSigma) . map (sigma 0 . flip IntMap.singleton 3) -- TODO ToricCode
-  print $ stab'RG rg
-  
---ee_slow :: IntSet -> Ham -> Double
---anderson_corr_ :: Ham -> [      IntMap Int ] -> (Double,Double)
+    print $ calc_moments [2,4,8] anderson_moment
   
   let corr_z_xs_ggs = third (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
         ToricCode -> wilson_z_xs_ggs

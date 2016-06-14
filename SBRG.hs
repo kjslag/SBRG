@@ -961,14 +961,11 @@ runRG = until (IntSet.null . unusedIs'RG) rgStep
 rmsQ :: Ham -> Sigma -> Bool
 rmsQ stab g0 = not $ null $ acommSigmas g0 stab
 
--- anderson_corr :: Int -> [Int] -> [Sigma] -> RG -> [(Int,[(Double,Double)])]
--- anderson_corr = anderson_corr' 0
-
 anderson_corr :: Int -> [Int] -> [(Sigma,Sigma)] -> Ham -> [(Int,[(Double,Double)])]
-anderson_corr  z xs ggs stab = [(x, [anderson_corr_ stab $ anderson_corr_gs_ z x gg $ ls'Ham stab | gg <- ggs]) | x <- xs]
+anderson_corr  z xs ggs stab = [(x, [anderson_corr_ stab $ map snd $ anderson_corr_gs_ z x gg $ ls'Ham stab | gg <- ggs]) | x <- xs]
 
 anderson_corr' :: Int -> [Int] -> [(Sigma,Sigma)] -> RG  -> [(Int,[(F,F)])]
-anderson_corr' z xs ggs rg   = [(x, [anderson_corr'_ rg  $ anderson_corr_gs_ z x gg $ ls'RG rg | gg <- ggs]) | x <- xs]
+anderson_corr' z xs ggs rg   = [(x, [anderson_corr'_ rg  $           anderson_corr_gs_ z x gg $ ls'RG rg | gg <- ggs]) | x <- xs]
 
 anderson_corr_gs_ :: Int -> Int -> (Sigma,Sigma) -> [Int] -> [(Int, IntMap Int)]
 anderson_corr_gs_ z x0 (g0,g0') ls | isJust gg = [(i, g_ i) | i <- [0,z..n-1]]
@@ -981,9 +978,9 @@ anderson_corr_gs_ z x0 (g0,g0') ls | isJust gg = [(i, g_ i) | i <- [0,z..n-1]]
         g_ :: Int -> IntMap Int -- g(i) g(i+x0)
         g_ i = IntMap.mapKeys (i_xs ls . zipWithExact (+) (xs_i ls i) . xs_i ls) $ ik'G $ fromJust gg
 
-anderson_corr_ :: Ham -> [(Int, IntMap Int)] -> (Double,Double)
+anderson_corr_ :: Ham -> [      IntMap Int ] -> (Double,Double)
 anderson_corr_ _    [] = (0,0)
-anderson_corr_ stab gs = meanError $ map (boole . rmsQ stab . sigma 0 . snd) gs
+anderson_corr_ stab gs = meanError $ map (boole . rmsQ stab . sigma 0) gs
 
 anderson_corr'_ :: RG -> [(Int, IntMap Int)] -> (F,F)
 anderson_corr'_ _  [] = (0,0)
@@ -1277,24 +1274,26 @@ main = do
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
     :: IO (Int, Model, [Int], [F], Double, Int, Int)
   
-  let defQ           = curry snd
-      alterSeedQ     = defQ False False
-      ternaryQ       = defQ False False
-      calc_EEQ       = defQ True  True
+  let alterSeedQ     = False
+      ternaryQ       = False
+      calc_EEQ       = True
       calc_aCorrQ    = model /= ToricCode
-      calc_aCorr'Q   = length ln2_ls <= 1
-      detailedQ      = defQ False False
-      cut_powQ       = defQ True  True
+      calc_aCorr'Q   = False -- length ln2_ls <= 1
+      detailedQ      = False
+      cut_powQ       = True
       keep_diagQ     = length ln2_ls <= 1
-      lrmiQ          = defQ False False
+      lrmiQ          = False
+      calc_corrLen   = True
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
       max_wolff_terms = justIf' (>=0) max_wolff_terms_
       ls0      = small_lsQ ? ln2_ls $ map (2^) ln2_ls
       ls       = ls'RG rg0
-      n        = n'RG  rg0
-      z        = n // product ls0
-      seed'    = if' (not alterSeedQ) seed $ Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
+      n0       = product ls0
+      n        = n'RG rg0
+      z        = n // n0
+      seed'_   = Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
+      seed'    = alterSeedQ ? seed'_ $ seed
       rg0      = init'RG model ls0 $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = not ternaryQ && keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
@@ -1369,11 +1368,11 @@ main = do
   
   unless ternaryQ $ do
     let log_ns      = reverse $ takeWhile (/=0) $ iterate (flip div 2) n
-        small_ns n0 = n<=n0 ? [1..n] $ [1..n0]++[n]
+        small_ns n_ = n<=n_ ? [1..n] $ [1..n_]++[n]
         
         -- [(bin upper bound, #, RSS of coefficients, sum of logs, max)]
         generic_histo :: [Int] -> (Sigma -> Int) -> [(Sigma,F)] -> [(Int,Int,F,Double,F)]
-        generic_histo ns f = map (\(n0,cs) -> (n0,length cs,rss cs, sum $ map (logF . abs) $ filter (/=0) cs, maximum $ map abs $ 0:cs)) . generic_histo_ ns . map (first f)
+        generic_histo ns f = map (\(n_,cs) -> (n_,length cs,rss cs, sum $ map (logF . abs) $ filter (/=0) cs, maximum $ map abs $ 0:cs)) . generic_histo_ ns . map (first f)
         
         length_histo :: [Int] -> [(Sigma,F)] -> [(Int,Int,F,Double,F)] -- TODO d>1
         length_histo ns = generic_histo ns $ length'Sigma l
@@ -1412,6 +1411,72 @@ main = do
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ mapMeanError entanglement_data
     
+--  putStr "entanglement entropies: " -- [(region size, region separation, [entanglement entropies])]
+--  print $ ee1d_ [1..last xs] [0] $ stab'RG rg
+    
+    putStr "long range mutual information: "
+    print $ lrmi_data
+    
+    when lrmiQ $ do
+      putStrLn "LRMI: "
+      mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
+  
+  when calc_corrLen $ do
+    let ijs = take (25*n0) $ pairs $ Random.randomRs (0,n0) $ Random.mkStdGen $ Hashable.hash (seed'_, "calc_corrLen ijs")
+          where pairs = \(i:j:ijs_) -> (i,j) : pairs ijs_
+        l0 = head ls0
+        qs = [0..2]
+        structure_factor :: (Int -> Int -> Double) -> [(Int,Double,Double)]
+        structure_factor f = zipWithExact (\q (s,ds) -> (q,s,ds)) qs $ map meanError $ transpose
+                           $ [ [ cos_ * f0
+                               | q <- qs,
+                                 let k0  = 2*pi/fromIntegral l0
+                                     cos_ = mean $ map (\x -> cos $ k0 * fromIntegral (q*x)) dxs ]
+                             | (i,j) <- ijs,
+                               let f0  = f i j
+                                   dxs = catMaybes $ zipWith justIf (map (==l0) ls0) $ (zipWithExact (-) `on` xs_i ls) i j ]
+    
+    putStr "mutual information structure factor: " -- [(q,MI(q), error) | q <- [(0,0),(1,0),(2,0)]]
+    print $ structure_factor $ let ee is = ee_slow (IntSet.fromList is) (stab'RG rg)
+                               in \i j -> ee [i] + ee [j] - ee [i,j]
+  
+-- ee_slow :: IntSet -> Ham -> Double
+-- andedrson_corr_ :: Ham -> [      IntMap Int ] -> (Double,Double)
+  
+  let corr_z_xs_ggs = third (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
+        ToricCode -> wilson_z_xs_ggs
+        Z2Gauge   -> wilson_z_xs_ggs
+        MajChain  -> let (a,b,c,d) = ([(0,3)], [(0,1),(1,1)], [(0,3),(1,3)], [(0,1),(2,1)])
+                     in  (1, xs, [(a,a), (b,b), (b,a), (c,c), (d,d), (d,c)])
+        _         -> (z, small_lsQ || ternaryQ ? xs $ sort $ union xs $ map (+(-1)) $ tail xs, xyz_gs)
+      xyz_gs = copy [[(0,k)] | k <- [1..3]]
+      wilson_z_xs_ggs = (last ls0*z, xs,
+                         copy [[(i_xs ls [0,y,mu],k) | y <- [0..last ls0-1]] | (mu,k) <- [(1,1),(2,3)]])
+      copy   = map $ \x -> (x,x)
+      aCorr  = uncurry3 anderson_corr  corr_z_xs_ggs $ stab'RG rg
+      aCorr' = uncurry3 anderson_corr' corr_z_xs_ggs           rg
+  
+  when calc_aCorrQ $ do
+    putStr "anderson correlator:  " -- [(distance, [xyz -> (correlator,error)])]
+    print $ aCorr
+  
+  when calc_aCorr'Q $ do
+    putStr "anderson correlator': " -- [(distance, [xyz -> (correlator,error)])]
+    max_wolff_terms_==0 ? print aCorr $ print aCorr'
+  
+  when (has_majQ && model == XYZ) $ do
+    putStr "majorana histo: "
+    print $ cut_pow2 $ tail $ get_majHistos'RG rg
+  
+--   print $ length $ show rg
+  
+  putStr "CPU time: "
+  cpu_time <- getCPUTime
+  print $ (1e-12::Double) * fromIntegral cpu_time
+
+
+-- old entanglement code
+
 --     let a = IntSet.fromList [0..1]
 --         c = IntSet.fromList [4..5]
 --         b = IntSet.fromList [head ls - i | i <- [1..2]]
@@ -1450,44 +1515,3 @@ main = do
 --           c  = IntSet.fromList [i_xs ls [x,y,q] | x<-[3..4], y<-[1,2,5,6], q<-[0,1]]
 --           s as = ee_slow (IntSet.unions as) (stab'RG rg)
 --       print $ s [a,c] + s [b,c] - s [a,b,c] - s[c]
-    
-    putStr "long range mutual information: "
-    print $ lrmi_data
-    
-    when lrmiQ $ do
-      putStrLn "LRMI: "
-      mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
-  
---   putStr "entanglement entropies: " -- [(region size, region separation, [entanglement entropies])]
---   print $ ee1d_ [1..last xs] [0] $ stab'RG rg
-  
-  let corr_z_xs_ggs = third (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
-        ToricCode -> wilson_z_xs_ggs
-        Z2Gauge   -> wilson_z_xs_ggs
-        MajChain  -> let (a,b,c,d) = ([(0,3)], [(0,1),(1,1)], [(0,3),(1,3)], [(0,1),(2,1)])
-                     in  (1, xs, [(a,a), (b,b), (b,a), (c,c), (d,d), (d,c)])
-        _         -> (z, small_lsQ || ternaryQ ? xs $ sort $ union xs $ map (+(-1)) $ tail xs, xyz_gs)
-      xyz_gs = copy [[(0,k)] | k <- [1..3]]
-      wilson_z_xs_ggs = (last ls0*z, xs,
-                         copy [[(i_xs ls [0,y,mu],k) | y <- [0..last ls0-1]] | (mu,k) <- [(1,1),(2,3)]])
-      copy   = map $ \x -> (x,x)
-      aCorr  = uncurry3 anderson_corr  corr_z_xs_ggs $ stab'RG rg
-      aCorr' = uncurry3 anderson_corr' corr_z_xs_ggs           rg
-  
-  when calc_aCorrQ $ do
-    putStr "anderson correlator:  " -- [(distance, [xyz -> (correlator,error)])]
-    print $ aCorr
-  
-  when calc_aCorr'Q $ do
-    putStr "anderson correlator': " -- [(distance, [xyz -> (correlator,error)])]
-    max_wolff_terms_==0 ? print aCorr $ print aCorr'
-  
-  when (has_majQ && model == XYZ) $ do
-    putStr "majorana histo: "
-    print $ cut_pow2 $ tail $ get_majHistos'RG rg
-  
---   print $ length $ show rg
-  
-  putStr "CPU time: "
-  cpu_time <- getCPUTime
-  print $ (1e-12::Double) * fromIntegral cpu_time

@@ -1429,13 +1429,12 @@ main = do
 --  
     putStr "mutual information moments: " -- [(n, avg MI(i1,..,in), error)]
     print $ calc_moments [2,3,4,6] $ let ee is = ee_slow (IntSet.fromList is) (stab'RG rg)
-                                         drops [] = []
-                                         drops (i:is) = is : map (i:) (drops is)
-                                     in \is -> sum (map ee $ drops is) - (fromIntegral (length is) - 1) * ee is
+                                         drop1s [] = []
+                                         drop1s (i:is) = is : map (i:) (drop1s is)
+                                     in \is -> sum (map ee $ drop1s is) - (fromIntegral (length is) - 1) * ee is
     
     putStr "anderson moments: " -- [(n, avg <Q_i1 .. Q_in>^2, error)]
-    print $ calc_moments [2,4,8] $ \is -> let f0 = (rms'G (stab'RG rg) . foldl1 (snd .* multSigma) . map (sigma 0 . flip IntMap.singleton 3)) is -- TODO ToricCode
-                                          in if' (f0 == 0) (traceShow $ is) id $ f0
+    print $ calc_moments [2,4,8] $ rms'G (stab'RG rg) . foldl1 (snd .* multSigma) . map (sigma 0 . flip IntMap.singleton 3) -- TODO ToricCode
   print $ stab'RG rg
   
 --ee_slow :: IntSet -> Ham -> Double

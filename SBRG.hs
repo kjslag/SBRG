@@ -485,20 +485,20 @@ instance Ord AbsF where
 
 -- Sigma
 
+type SigmaHash = Int
+
 -- TODO maybe add a ik_diag'G for ham'RG
 data Sigma = Sigma {
   ik'G   :: !(IntMap Int),
   iD'G   :: !Int,
   meta'G :: !Meta'G,
-  hash'G ::  Word } -- TODO use a hash that can be calculated easily by multSigma
+  hash'G ::  SigmaHash } -- TODO use a hash that can be calculated easily by multSigma
 
 sigma :: Int -> IntMap Int -> Sigma
 sigma iD ik  = Sigma ik iD default_meta'G $ calc_hash'G ik iD
 
-calc_hash'G :: IntMap Int -> Int -> Word
-calc_hash'G ik iD = mult*fromIntegral iD + IntMap.foldrWithKey' (\i k hash' -> hash' + (fromIntegral k) * bit (mod (2*i) n)) 0 ik
-  where mult = 11400714819323198549 -- NextPrime[2^64 2/(1 + Sqrt@5)]
-        n    = finiteBitSize (undefined::Word)
+calc_hash'G :: IntMap Int -> Int -> SigmaHash
+calc_hash'G ik iD = Hashable.hash (IntMap.toList ik, iD)
 
 set_iD'G :: Int -> Sigma -> Sigma
 set_iD'G iD g = g { iD'G = iD, hash'G = calc_hash'G (ik'G g) iD }
@@ -514,7 +514,7 @@ instance Eq Sigma where
 instance Ord Sigma where
   Sigma g1 iD1 _ hash1 `compare` Sigma g2 iD2 _ hash2 =
       compare hash1 hash2 <> compare iD1 iD2 <> (ptrEquality g1 g2 ? EQ $ compare' g1 g2)
-    where compare' x y = compare x y
+    where compare' x y = compare x y -- let ret = compare x y in ret == EQ ? ret $ traceShow (x,y) ret
 
 instance Show Sigma where
   showsPrec n g = showsPrec n $ IntMap.toList $ ik'G g
@@ -542,8 +542,11 @@ sort'GT = sortWith (AbsF . snd)
 scale'GT :: F -> SigmaTerm -> SigmaTerm
 scale'GT x (g,c) = (g,x*c)
 
-length'Sigma :: Int -> Sigma -> Int -- TODO d>1
-length'Sigma l = (l-) . maximum . modDifferences l . IntMap.keys . ik'G
+length'G :: Int -> Sigma -> Int -- TODO d>1
+length'G l = (l-) . maximum . modDifferences l . IntMap.keys . ik'G
+
+size'G :: Sigma -> Int
+size'G = IntMap.size . ik'G
 
 acommQ :: Sigma -> Sigma -> Bool
 acommQ g1 g2 = foldl_ xor False $ (intersectionWith' neq' `on` ik'G) g1 g2
@@ -630,7 +633,7 @@ c4s :: F -> [Sigma] -> SigmaTerm -> SigmaTerm
 c4s dir g4s gT = foldl' (\gT'@(!g',!c') g4 -> maybe gT' (scale'GT $ dir*c') $ c4 g4 g') gT g4s
 
 localQ'Sigma :: Int -> Sigma -> Bool
-localQ'Sigma n = \g -> IntMap.size (ik'G g) < round max_n
+localQ'Sigma n = \g -> size'G g < round max_n
   where max_n = sqrt $ fromIntegral n :: Double
 --where max_n = log (fromIntegral n) / log 2 + 16 :: Double
 
@@ -643,6 +646,8 @@ toLists'MapGT = map toList'GT . Map.toList
 
 fromList'MapGT :: [SigmaTerm] -> MapGT
 fromList'MapGT = Map.fromListWith (+)
+
+instance MySeq MapGT
 
 -- MapAbsSigmas
 
@@ -815,7 +820,50 @@ c4s_wolff_'Ham onlyDiag max_wolff_terms dir g4_H0Gs ham_ =
 c4s_wolff'Ham :: Maybe Int -> F -> [G4_H0G] -> Ham -> Ham
 c4s_wolff'Ham = c4s_wolff_'Ham False
 
---
+-- Diag
+
+type TinyGT = (TinyG, F)
+
+data TinyG = TinyG {
+  hash'TinyG   :: !SigmaHash,
+  size'TinyG   :: !Int,
+  length'TinyG :: !(Maybe Int)}
+  deriving (Show)
+
+instance Eq TinyG where
+  (==) = (==) `on` hash'TinyG
+
+instance Ord TinyG where
+  compare = compare `on` hash'TinyG
+
+to'TinyG :: (Maybe Int) -> Sigma -> TinyG
+to'TinyG l g = TinyG { hash'TinyG   = hash'G g,
+                       size'TinyG   = size'G g,
+                       length'TinyG = flip length'G g <$> l }
+
+data MapTinyGT = MapTinyGT {
+  gc'MapTinyGT :: !(Map TinyG F),
+  l'MapTinyGT  :: !(Maybe Int)}
+  deriving (Show)
+
+empty'MapTinyGT :: Maybe Int -> MapTinyGT
+empty'MapTinyGT = MapTinyGT Map.empty
+
+-- to'MapTinyGT :: Maybe Int -> MapGT -> MapTinyGT
+-- to'MapTinyGT l = flip MapTinyGT l . Map.mapKeys (to'TinyG l)
+
+instance AddHash MapTinyGT (Sigma,F) where
+  (MapTinyGT gc l) +# (g,c) = flip MapTinyGT l $ Map.alter (maybe (Just c) (+?c)) (to'TinyG l g) gc
+
+data Diag = NoDiag | Diag'MapGT !MapGT | Diag'MapTinyGT !MapTinyGT
+  deriving (Show)
+
+instance AddHash Diag (Sigma,F) where
+  NoDiag             +#  _ = NoDiag
+  (Diag'MapGT     m) +# gc = Diag'MapGT     $ m +# gc
+  (Diag'MapTinyGT m) +# gc = Diag'MapTinyGT $ m +# gc
+
+-- RG
 
 type G4_H0G = Either Sigma ([SigmaTerm],Int) -- Either g4 (icomm H_0 Sigma/h_3^2, i3)
 
@@ -825,7 +873,7 @@ data RG = RG {
   ham0'RG            :: !Ham,              -- original Ham in old basis
   c4_ham0'RG         ::  Ham,              -- original ham in new basis
   ham'RG             :: !Ham,
-  diag'RG            :: !(Maybe Ham),
+  diag'RG            :: !Diag,
   unusedIs'RG        :: !IntSet,
   g4_H0Gs'RG         :: ![G4_H0G],
   offdiag_errors'RG  :: ![F],
@@ -840,7 +888,6 @@ data RG = RG {
 
 instance MySeq RG where
   mySeq rg = id -- deepseq rg
-           . seq' diag'RG
            . seq' (head . offdiag_errors'RG)
            . seq' ((head<$>) . trash'RG)
            . seq' (head . stab0'RG)
@@ -864,7 +911,7 @@ wolff_errors'RG = map (rss . map snd . fst) . rights . g4_H0Gs'RG
 
 init'RG :: Model -> [Int] -> Ham -> RG
 init'RG model ls0 ham = rg
-  where rg  = RG model ls0 ham ham ham (Just $ zero'Ham $ ls'Ham ham) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
+  where rg  = RG model ls0 ham ham ham (Diag'MapGT Map.empty) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
@@ -882,7 +929,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
                         ToricCode -> head $ sortOn calc_size $ map (sigma 0 . IntMap.fromListWith error_ . filter ((/=0) . snd))
                                           $ tail $ traverse (\i -> map (i,) [0..3]) $ IntSet.toList unusedIs
                         _ -> (!!1) $ sortOn calc_size [sigma 0 $ IntMap.fromSet (const k) unusedIs | k <- [1..3]]
-            calc_size = IntMap.size . ik'G . fst . c4s (-1) (g4s'RG rg) . (,0)
+            calc_size = size'G . fst . c4s (-1) (g4s'RG rg) . (,0)
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
   --unusedIs_ = IntMap.fromSet (const ()) unusedIs
   --i3        = snd $ the $ until (null . drop 1) (\is -> let is' = filter (even . fst) is in map (first (flip div 2)) $ null is' ? is $ is') $ map (\i -> (i,i))
@@ -929,7 +976,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     
     rg' = rg {c4_ham0'RG        = c4_ham0',
               ham'RG            = ham4 +# _G4,
-              diag'RG           = (+# [diag',diag'']) <$> diag,
+              diag'RG           = diag +# [diag',diag''],
               unusedIs'RG       = unusedIs',
               g4_H0Gs'RG        = myForce g4_H0Gs' ++ g4_H0Gs,
               offdiag_errors'RG = offdiag_error : offdiag_errors,
@@ -950,7 +997,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     isDiag (g,_) = useSimple_i3 ? (fst $ IntMap.findMax $ ik'G g) <= i3
                  $ not $ True {-nUnused >= size_g-} ? (any (flip IntSet.member unusedIs') $ IntMap.keys $ ik'G g)
                                            $ (any (flip IntMap.member $ ik'G g ) $ IntSet.toList unusedIs')
-      where size_g  = IntMap.size $ ik'G g
+      where size_g  = size'G g
             nUnused = IntSet.size unusedIs'
     
     find_G4s :: Sigma -> Sigma -> [Sigma]
@@ -1312,11 +1359,12 @@ main = do
       ls       = ls'RG rg0
       n0       = product ls0
       n        = n'RG rg0
+      l_1d     = length ls0 == 1 ? Just n $ Nothing
       z        = n // n0
       seed'_   = Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
       seed'    = alterSeedQ ? seed'_ $ seed
       rg0      = init'RG model ls0 $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
-      rg       = runRG $ rg0 { diag'RG            = not ternaryQ && keep_diagQ ? diag'RG rg0 $ Nothing,
+      rg       = runRG $ rg0 { diag'RG            = not ternaryQ && keep_diagQ ? (Diag'MapTinyGT $ empty'MapTinyGT l_1d) $ NoDiag,
                                trash'RG           = Nothing,
                                max_rg_terms'RG    = max_rg_terms,
                                max_wolff_terms'RG = max_wolff_terms }
@@ -1361,11 +1409,11 @@ main = do
     print $ cut_pow2 $ map snd $ stab0'RG rg
     
     putStr "stabilizer sizes: "
-    print $ cut_pow2 $ map (IntMap.size . ik'G . fst) $ ordered_stab
+    print $ cut_pow2 $ map (size'G . fst) $ ordered_stab
     
     when (length ls0 == 1) $ do
       putStr "stabilizer lengths: "
-      print $ cut_pow2 $ map (length'Sigma (head ls) . fst) $ ordered_stab
+      print $ cut_pow2 $ map (length'G (head ls) . fst) $ ordered_stab
   
   when detailedQ $ do
     putStr "stabilizers: "
@@ -1380,9 +1428,8 @@ main = do
     putStr "i3s: "
     print $ i3s'RG rg
     
-    flip mapM_ (diag'RG rg) $ \diag -> do
-      putStr "effective Hamiltonian: "
-      print diag
+  --putStr "effective Hamiltonian: "
+  --print $ diag'RG rg
     
     putStr "holographic Hamiltonian: "
     print $ c4_ham0'RG rg
@@ -1392,31 +1439,36 @@ main = do
         small_ns n_ = n<=n_ ? [1..n] $ [1..n_]++[n]
         
         -- [(bin upper bound, #, RSS of coefficients, sum of logs, max)]
-        generic_histo :: [Int] -> (Sigma -> Int) -> [(Sigma,F)] -> [(Int,Int,F,Double,F)]
+        generic_histo :: [Int] -> (TinyG -> Int) -> [TinyGT] -> [(Int,Int,F,Double,F)]
         generic_histo ns f = map (\(n_,cs) -> (n_,length cs,rss cs, sum $ map (logF . abs) $ filter (/=0) cs, maximum $ map abs $ 0:cs)) . generic_histo_ ns . map (first f)
         
-        length_histo :: [Int] -> [(Sigma,F)] -> [(Int,Int,F,Double,F)] -- TODO d>1
-        length_histo ns = generic_histo ns $ length'Sigma l
-          where l = head ls
+        length_histo :: [Int] -> [TinyGT] -> [(Int,Int,F,Double,F)] -- TODO d>1
+        length_histo ns = generic_histo ns (fromJust . length'TinyG)
         
-        all_histos :: String -> ([Int],[Int]) -> [Int] -> [(Sigma,F)] -> IO ()
+        all_histos :: String -> ([Int],[Int]) -> [Int] -> [TinyGT] -> IO ()
         all_histos name (nsS,nsS') nsL gcs = do
           putStr $ name ++ " size histo: "
-          print $ generic_histo nsS (IntMap.size . ik'G) gcs
+          print $ generic_histo nsS size'TinyG gcs
           
           when (length ls0 == 1) $ do
             putStr $ name ++ " length histo: "
             print $ length_histo nsL gcs
             
             putStr $ name ++ " size-length histo: "
-            print $ map (second $ length_histo nsL) $ generic_histo_ nsS' $ map (\gT@(g,_) -> (IntMap.size $ ik'G g, gT)) gcs
+            print $ map (second $ length_histo nsL) $ generic_histo_ nsS' $ map (\gT@(g,_) -> (size'TinyG g, gT)) gcs
+        
+        toTinys = map (first $ to'TinyG l_1d) . Map.toList
     
     putStr "small stabilizers: " 
-    print $ map (first $ IntMap.size . ik'G)
+    print $ map (first $ size'G)
           $ uncurry (++) $ second (take 20) $ span ((==0) . snd) $ sortWith (abs . snd) $ toList'Ham $ stab'RG rg
     
-    all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ Map.toList  $  gc'Ham  $  stab'RG rg
-    all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $ Map.toList <$> gc'Ham <$> diag'RG rg
+    all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ toTinys $ gc'Ham $ stab'RG rg
+    all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $
+      case diag'RG rg of
+           NoDiag           -> Nothing
+           Diag'MapGT     m -> Just $ toTinys m
+           Diag'MapTinyGT m -> Just $ Map.toList $ gc'MapTinyGT m
 --  all_histos "c4 ham0"         (log_ns     , log_ns     ) log_ns         $ Map.toList  $  gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 

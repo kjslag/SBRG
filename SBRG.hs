@@ -774,7 +774,10 @@ acommCandidates_ g ham = nlcgs'Ham ham : IntMap.elems localSigmas
   where localSigmas = IntMap.intersection (icgs'Ham ham) $ ik'G g
 
 nearbySigmas :: Int -> Ham -> MapAbsSigmas
-nearbySigmas i ham = nlcgs'Ham ham +# (IntMap.lookup i $ icgs'Ham ham)
+nearbySigmas i ham = nearbySigmas' [i] ham
+
+nearbySigmas' :: [Int] -> Ham -> MapAbsSigmas
+nearbySigmas' is ham = nlcgs'Ham ham +# [IntMap.lookup i $ icgs'Ham ham | i <- is]
 
 -- the Maybe SigmaTerm has a +/- 1 coefficient
 icomm_sorted'Ham :: SigmaTerm -> Ham -> [(Maybe SigmaTerm, F)]
@@ -1053,20 +1056,22 @@ anderson_corr'_ rg gs = meanError $ IntMap.elems $ IntMap.fromListWith (+) $ ([(
                 $ c4s_wolff_'Ham True (max_wolff_terms'RG rg) 1 (reverse $ g4_H0Gs'RG rg)
                 $ fromList'Ham (ls'RG rg) $ map (\(i,g) -> (sigma (i+1) g,1)) gs
 
-ee_slow :: IntSet -> Ham -> Double
-ee_slow is stab = (0.5*) $ fromIntegral $ symmeterize_rankZ2_old $ acommMat $
+ee_local :: IntSet -> Ham -> Double
+ee_local is stab = (0.5*) $ fromIntegral $ symmeterize_rankZ2_old $ acommMat $
     [sigma 0 g'
-    | g <- map ik'G $ Map.keys $ gc'Ham stab,
-      let g' = IntMap.intersection g $ IntMap.fromSet (const ()) is,
+    | g <- map ik'G $ toList $ NestedFold $ nearbySigmas' (IntSet.toList is) stab,
+      let g' = intersection' g ks,
       not (IntMap.null g') && ((/=) `on` IntMap.size) g g']
-  where acommMat gs = [replicate n False ++ [acommQ g g' | g' <- gs'] | (n, (g:gs')) <- zip [1..] (tails gs)] -- TODO tails
+  where acommMat gs = [replicate n False ++ [acommQ g g' | g' <- gs'] | (n, (g:gs')) <- zip [1..] (tails gs)]
+        ks          = IntMap.fromSet (const ()) is
+        intersection' x y = IntMap.intersection x y
 
 ee1d_slow :: [Int] -> Ham -> [(Int,Double,Double)]
 ee1d_slow l0s = map (\(l0,_,ee,er) -> (l0,ee,er)) . ee1d_slow' l0s [0]
 
 ee1d_slow' :: [Int] -> [Int] -> Ham -> [(Int,Int,Double,Double)]
 ee1d_slow' l0s x0s stab =
-    [uncurry (l0,x0,,) $ meanError [ee_slow (is l0 x `IntSet.union` is l0 (x+x0)) stab | x <- [0..lx-1]]
+    [uncurry (l0,x0,,) $ meanError [ee_local (is l0 x `IntSet.union` is l0 (x+x0)) stab | x <- [0..lx-1]]
     | l0 <- l0s, x0 <- x0s]
   where n       = n'Ham stab
         lx      =           head $ ls'Ham stab
@@ -1077,7 +1082,7 @@ ee1d_slow' l0s x0s stab =
 -- mutual information
 mutual_information :: [IntSet] -> Ham -> Double
 mutual_information regions stab = sum (map ee $ drop1s regions) - (genericLength regions - 1) * ee regions
-  where ee is         = ee_slow (IntSet.unions is) stab
+  where ee is         = ee_local (IntSet.unions is) stab
         drop1s []     = []
         drop1s (x:xs) = xs : map (x:) (drop1s xs)
 
@@ -1352,7 +1357,7 @@ main = do
       ternaryQ       = False
       calc_EEQ       = True
       calc_aCorrQ    = model /= ToricCode
-      calc_aCorr'Q   = False -- length ln2_ls <= 1
+      calc_aCorr'Q   = length ln2_ls <= 1
       detailedQ      = False
       cut_powQ       = True
       keep_diagQ     = length ln2_ls <= 1
@@ -1501,10 +1506,10 @@ main = do
       mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
   
   when calc_momentsQ $ do
-    let rand_iss n_ = take (2*n) $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed'_, "moments", n_)
+    let rand_iss samples n_ = take samples $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed'_, "moments", samples, n_)
           where groups = (\(is0,is') -> is0 : groups is') . splitAt n_
-        calc_moments :: [Int] -> ([Int] -> Double) -> [(Int,Double,Double)]
-        calc_moments ns_ f = [ uncurry (n_,,) $ meanError $ map f $ rand_iss n_ | n_ <- ns_ ]
+        calc_moments :: Int -> [Int] -> ([Int] -> Double) -> [(Int,Double,Double)]
+        calc_moments samples ns_ f = [ uncurry (n_,,) $ meanError $ map f $ rand_iss samples n_ | n_ <- ns_ ]
         
         mutual_information_moment is = case map IntSet.singleton $ IntSet.toList $ foldl1 xor'IntSet $ map IntSet.singleton is of
                                             []      -> 1
@@ -1512,10 +1517,10 @@ main = do
         anderson_moment = uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . foldl1 (fromJust .* acomm'GT) . map ((,1) . sigma 0 . flip IntMap.singleton 3) -- TODO ToricCode
     
     putStr "mutual information moments: " -- [(n, avg MI(i1,..,in), error)]
-    print $ calc_moments [2,3,4,6] mutual_information_moment
+    print $ calc_moments (4*n) [2,3,4,6] mutual_information_moment
     
     putStr "anderson moments: " -- [(n, avg <Q_i1 .. Q_in>^2, error)]
-    print $ calc_moments [2,4,8] anderson_moment
+    print $ calc_moments (32*n) [2,4,8] anderson_moment
   
   let corr_z_xs_ggs = third (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
         ToricCode -> wilson_z_xs_ggs
@@ -1554,7 +1559,7 @@ main = do
 --     let a = IntSet.fromList [0..1]
 --         c = IntSet.fromList [4..5]
 --         b = IntSet.fromList [head ls - i | i <- [1..2]]
---         s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--         s as = ee_local (IntSet.unions as) (stab'RG rg)
 --     putStr "I(A:B): "
 --     print $ s[a] + s[b] - s[a,b]
 --     putStr "I(A:B:C): "
@@ -1567,7 +1572,7 @@ main = do
 --         c = IntSet.fromList [        4,5,             12,13]
 -- --         c = IntSet.fromList [        4,5,   8,9          ]
 --         b = IntSet.fromList [                   10,11]
---         s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--         s as = ee_local (IntSet.unions as) (stab'RG rg)
 --     putStr "I(A:B): "
 --     print $ s[a] + s[b] - s[a,b]
 --     putStr "I(A:B:C): "
@@ -1575,17 +1580,17 @@ main = do
 --     putStr "I(A:B|C): "
 --     print $ s [a,c] + s [b,c] - s [a,b,c] - s[c]
     
---     print $ [(lx,ly,-2*(fromIntegral$lx+ly) + ee_slow (IntSet.fromList [i_xs ls [x,y,a] | x <-[1..lx], y<-[1..ly], a<-[0,1]]) (stab'RG rg)) |
+--     print $ [(lx,ly,-2*(fromIntegral$lx+ly) + ee_local (IntSet.fromList [i_xs ls [x,y,a] | x <-[1..lx], y<-[1..ly], a<-[0,1]]) (stab'RG rg)) |
 --               lx <- [2,4,8], ly <- [2,4,8] ]
 --     do
 --       let a = IntSet.fromList [i_xs ls [x,y,q] | x<-[1..3], y<-[1..4], q<-[0,1]]
 --           b = IntSet.fromList [i_xs ls [x,y,q] | x<-[4..7], y<-[1..2], q<-[0,1]]
 --           c = IntSet.fromList [i_xs ls [x,y,q] | x<-[4..7], y<-[3..4], q<-[0,1]]
---           s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--           s as = ee_local (IntSet.unions as) (stab'RG rg)
 --       print $ (s [a], s [a,b], s [a,b,c])
 --       print $ s [a] + s [b] + s [c] - s [a,b] - s [b,c] - s [c,a] + s[a,b,c]
 --       let a  = IntSet.fromList [i_xs ls [x,y,q] | x<-[1..2], y<-[1..6], q<-[0,1]]
 --           b  = IntSet.fromList [i_xs ls [x,y,q] | x<-[5..6], y<-[1..6], q<-[0,1]]
 --           c  = IntSet.fromList [i_xs ls [x,y,q] | x<-[3..4], y<-[1,2,5,6], q<-[0,1]]
---           s as = ee_slow (IntSet.unions as) (stab'RG rg)
+--           s as = ee_local (IntSet.unions as) (stab'RG rg)
 --       print $ s [a,c] + s [b,c] - s [a,b,c] - s[c]

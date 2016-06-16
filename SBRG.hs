@@ -39,6 +39,9 @@ import System.Environment
 import System.CPUTime
 import System.Exit (exitSuccess, exitFailure)
 
+import Data.Strict (Pair(..))
+import qualified Data.Strict as S
+
 --import Control.Monad.Trans.State.Strict (State)
 import qualified Control.Monad.Trans.State.Strict as State
 
@@ -492,16 +495,22 @@ data Sigma = Sigma {
   ik'G   :: !(IntMap Int),
   iD'G   :: !Int,
   meta'G :: !Meta'G,
-  hash'G ::  SigmaHash } -- TODO use a hash that can be calculated easily by multSigma
+  hash'G ::  SigmaHash }
 
 sigma :: Int -> IntMap Int -> Sigma
-sigma iD ik  = Sigma ik iD default_meta'G $ calc_hash'G ik iD
+sigma iD ik = g
+  where g = Sigma ik iD default_meta'G $ Hashable.hash g
 
-calc_hash'G :: IntMap Int -> Int -> SigmaHash
-calc_hash'G ik iD = Hashable.hash (IntMap.toList ik, iD)
+data IntPair = IntPair !Int !Int
+
+-- http://hackage.haskell.org/package/hashable-1.2.4.0/docs/src/Data.Hashable.Class.html#line-452
+instance Hashable Sigma where
+  hashWithSalt salt g = (\(IntPair s x) -> hashWithSalt s x) $ IntMap.foldlWithKey' f (IntPair (hashWithSalt salt $ iD'G g) (0::Int)) $ ik'G g
+    where f (IntPair s n) k x = IntPair (hashWithSalt s k `hashWithSalt` x) (n + 1)
 
 set_iD'G :: Int -> Sigma -> Sigma
-set_iD'G iD g = g { iD'G = iD, hash'G = calc_hash'G (ik'G g) iD }
+set_iD'G iD g = g'
+  where g' = g { iD'G = iD, hash'G = Hashable.hash g' }
 
 set_meta'G :: Meta'G -> Sigma -> Sigma
 set_meta'G meta g = g { meta'G = meta }
@@ -888,6 +897,7 @@ data RG = RG {
 
 instance MySeq RG where
   mySeq rg = id -- deepseq rg
+           . seq' (head . g4_H0Gs'RG)
            . seq' (head . offdiag_errors'RG)
            . seq' ((head<$>) . trash'RG)
            . seq' (head . stab0'RG)
@@ -919,8 +929,6 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
   | IntSet.null unusedIs = rg
   | otherwise            = myForce $ update_meta'RG rg rg'
   where
-    useSimple_i3 = False -- length ls0 >= 2
-    
     _G1           :: [(SigmaTerm,SigmaTerm)] -- [(icomm g3' gT/h3', -gT)] where gT is in Sigma
     _G2, _G3, _G4 :: [SigmaTerm]
     g3        = fromMaybe g3__ g3_
@@ -933,8 +941,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
   --unusedIs_ = IntMap.fromSet (const ()) unusedIs
   --i3        = snd $ the $ until (null . drop 1) (\is -> let is' = filter (even . fst) is in map (first (flip div 2)) $ null is' ? is $ is') $ map (\i -> (i,i))
-    i3        = useSimple_i3 ? IntSet.findMin unusedIs
-              $ fst $ maximumBy (comparing snd) $ (\is -> zipExact is $ modDifferences (n'Ham ham1) is)
+    i3        = fst $ maximumBy (comparing snd) $ (\is -> zipExact is $ modDifferences (n'Ham ham1) is)
               $ IntSet.toList $ IntSet.intersection (IntMap.keysSet $ ik'G g3) unusedIs
     unusedIs' = IntSet.delete i3 unusedIs
     g3'       = set_meta'G (meta'G g3) $ sigma 0 $ IntMap.singleton i3 3
@@ -978,7 +985,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
               ham'RG            = ham4 +# _G4,
               diag'RG           = diag +# [diag',diag''],
               unusedIs'RG       = unusedIs',
-              g4_H0Gs'RG        = myForce g4_H0Gs' ++ g4_H0Gs,
+              g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
               offdiag_errors'RG = offdiag_error : offdiag_errors,
               trash'RG          = (trash':) <$> trash,
               stab0'RG          = (g3', h3'):stab0,
@@ -993,16 +1000,15 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
 --     isDiag :: SigmaTerm -> Bool
 --     isDiag (g,_) = IntSet.null $ IntSet.intersection unusedIs' $ IntMap.keysSet $ ik'G g
     
-    isDiag :: SigmaTerm -> Bool -- TODO get rid of useSimple_i3 and the nUnused >= size_g below
-    isDiag (g,_) = useSimple_i3 ? (fst $ IntMap.findMax $ ik'G g) <= i3
-                 $ not $ True {-nUnused >= size_g-} ? (any (flip IntSet.member unusedIs') $ IntMap.keys $ ik'G g)
+    isDiag :: SigmaTerm -> Bool -- TODO get rid of nUnused >= size_g below
+    isDiag (g,_) = not $ True {-nUnused >= size_g-} ? (any (flip IntSet.member unusedIs') $ IntMap.keys $ ik'G g)
                                            $ (any (flip IntMap.member $ ik'G g ) $ IntSet.toList unusedIs')
       where size_g  = size'G g
             nUnused = IntSet.size unusedIs'
     
     find_G4s :: Sigma -> Sigma -> [Sigma]
     find_G4s g0 g1 = maybe (g0 == g1 ? [] $ assert (acommQ g_ g1 && acommQ g0 g_) $ find_G4s g_ g1 ++ find_G4s g0 g_) (pure . fst) $ icomm g0 g1
-      where g_        = sigma 0 $ useSimple_i3 ? g_' $ IntMap.singleton i3 1
+      where g_        = sigma 0 $ IntMap.singleton i3 1
             (i0s,i1s) = both (IntSet.intersection unusedIs . IntMap.keysSet . ik'G) (g0,g1)
             i01s      = IntSet.intersection i0s i1s
             is        = map IntSet.findMin $ IntSet.null i01s ? [i0s,i1s] $ [i01s]

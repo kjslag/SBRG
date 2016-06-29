@@ -9,7 +9,7 @@
 {-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances #-} -- OverloadedLists
 -- :set -XTupleSections
 
-{-# OPTIONS -Wall -fno-warn-unused-binds -fno-warn-unused-imports -O -optc-O2 -optc-march=native -optc-mfpmath=sse #-}
+{-# OPTIONS -Wall -Wno-unused-top-binds -fno-warn-unused-imports -Wno-orphans -O -optc-O2 -optc-march=native -optc-mfpmath=sse #-}
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
 -- +RTS -hy && hp2ps -c SBRG.hp && okular SBRG.ps
@@ -17,7 +17,8 @@
 import GHC.Prim (reallyUnsafePtrEquality#)
 import GHC.Exts (groupWith, sortWith, the)
 
-import Control.Exception.Base (assert)
+import Control.Applicative
+-- import Control.Exception.Base (assert)
 import Control.Monad
 import Data.Bifunctor
 import Data.Bits
@@ -63,6 +64,10 @@ import qualified System.Random as Random
 
 error_ :: a
 error_ = error "compile with '-rtsopts -prof -fprof-auto' and run with '+RTS -xc' for a stack trace"
+
+assert :: Bool -> a -> a
+assert True  = id
+assert False = error "assert"
 
 -- generic
 
@@ -121,8 +126,14 @@ thd3 (_,_,z) = z
 both :: (a -> b) -> (a,a) -> (b,b)
 both f = bimap f f
 
-third :: (c -> c') -> (a,b,c) -> (a,b,c')
-third f (x,y,z) = (x,y,f z)
+first3 :: (a -> a') -> (a,b,c) -> (a',b,c)
+first3 f (x,y,z) = (f x,y,z)
+
+second3 :: (b -> b') -> (a,b,c) -> (a,b',c)
+second3 f (x,y,z) = (x,f y,z)
+
+third3 :: (c -> c') -> (a,b,c) -> (a,b,c')
+third3 f (x,y,z) = (x,y,f z)
 
 uncurry3 :: (a -> b -> c -> d) -> (a, b, c) -> d
 uncurry3 f (x,y,z) = f x y z
@@ -216,10 +227,13 @@ mergeUnionsBy :: (a -> a -> Ordering) -> (a -> a -> a) -> [[a]] -> [a]
 mergeUnionsBy cmp f = mergeUsing mergePair []
   where mergePair xs@(x:xs') ys@(y:ys') = case x `cmp` y of
                                                LT ->   x   : mergePair xs' ys
-                                               EQ -> f x y : mergePair xs' ys'
                                                GT ->     y : mergePair xs  ys'
+                                               EQ -> f x y : mergePair xs' ys'
         mergePair [] ys = ys
         mergePair xs [] = xs
+
+-- mergeUnionsWith :: Ord b => (a -> b) -> (a -> a -> a) -> [[a]] -> [a]
+-- mergeUnionsWith f = mergeUnionsBy $ comparing f
 
 sq :: Num a => a -> a
 sq x = x*x
@@ -228,7 +242,8 @@ isPow2 :: Int -> Bool
 isPow2 x = popCount x == 1
 
 mean :: Floating f => [f] -> f
-mean xs = sum xs / genericLength xs
+mean = (\(n,x) -> x/fromIntegral n)
+     . foldl' (\(!n,!x) x0 -> (n+1, x+x0)) (0::Int,0)
 
 rms :: Floating f => [f] -> f
 rms = sqrt . mean . map sq
@@ -236,10 +251,23 @@ rms = sqrt . mean . map sq
 rss :: Floating f => [f] -> f
 rss = sqrt . sum . map sq
 
+weightedMeanError :: (Floating f, MySeq f) => [(f, f)] -> (f, f)
+weightedMeanError = weightedMeanError' id
+
+weightedMeanError' :: (Floating wf, MySeq wf, Floating f, MySeq f) => (wf -> f) -> [(wf, f)] -> (f, f)
+weightedMeanError' f = (\(w,wx,wxx) -> (wx/w, sqrt (wxx - wx*wx/w) / w)) . first3 f
+                     . foldl' (\(!w,!wx,!wxx) (w0,x0) -> myForce (w+w0, wx+f w0*x0, wxx+f w0*x0*x0)) (0,0,0)
+
 meanError :: Floating f => [f] -> (f, f)
-meanError xs  = (mean0, sqrt $ (sum $ map (sq . (mean0-)) xs) / ((n-1)*n) )
-  where n     = genericLength xs
-        mean0 = sum xs / n
+meanError = (\(n,x,xx) -> (x/n, sqrt ((n*xx - x*x)/(n-1)) / n)) . first3 fromIntegral
+          . foldl' (\(!n,!x,!xx) x0 -> (n+1, x+x0, xx+x0*x0)) (0::Int,0,0)
+
+-- meanError' :: Floating f => [f] -> (f, f)
+-- meanError' = (\(n,x,xx) -> (x/n, sqrt (xx - x*x/n) / n)) . first3 fromIntegral
+--            . foldl' (\(n,x,xx) x0 -> (n+1, x+x0, xx+x0*x0)) (0::Int,0,0)
+-- 
+-- meanError'' :: Floating f => [f] -> (f, f)
+-- meanError'' = weightedMeanError . zip (repeat 1)
 
 epsilon, epsilon_2 :: Fractional f => f
 epsilon   = 2 ^^ (-52::Int)
@@ -258,6 +286,45 @@ rotateLeft n xs = bs ++ as
 -- input must be sorted
 modDifferences :: Int -> [Int] -> [Int]
 modDifferences l is = (head is + l - last is) : zipWith (-) (tail is) is
+
+modDist :: Int -> Int -> Int
+modDist l x = abs $ mod (x+l//2) l - l//2
+
+-- ZipList
+
+instance Num a => Num (ZipList a) where
+  (+) = liftA2 (+)
+  (-) = liftA2 (-)
+  (*) = liftA2 (*)
+  negate      = fmap negate
+  abs         = fmap abs
+  signum      = fmap signum
+  fromInteger = pure . fromInteger
+
+instance Fractional a => Fractional (ZipList a) where
+  recip        = fmap recip
+  (/)          = liftA2 (/)
+  fromRational = pure . fromRational
+
+instance Floating a => Floating (ZipList a) where
+    pi      = pure pi
+    exp     = fmap exp
+    sqrt    = fmap sqrt
+    log     = fmap log
+    (**)    = liftA2 (**)
+    logBase = liftA2 logBase
+    sin     = fmap sin
+    tan     = fmap tan
+    cos     = fmap cos
+    asin    = fmap asin
+    atan    = fmap atan
+    acos    = fmap acos
+    sinh    = fmap sinh
+    tanh    = fmap tanh
+    cosh    = fmap cosh
+    asinh   = fmap asinh
+    atanh   = fmap atanh
+    acosh   = fmap acosh
 
 -- Force
 
@@ -280,8 +347,14 @@ instance MySeq a => MySeq (Maybe a) where
 instance MySeq a => MySeq [a] where
   mySeq = mySeq'Foldable
 
+instance MySeq a => MySeq (ZipList a) where
+  mySeq = mySeq'Foldable
+
 instance (MySeq a, MySeq b) => MySeq (a,b) where
   mySeq (x,y) = mySeq x . mySeq y
+
+instance (MySeq a, MySeq b, MySeq c) => MySeq (a,b,c) where
+  mySeq (x,y,z) = mySeq x . mySeq y . mySeq z
 
 instance (MySeq a, MySeq b) => MySeq (Either a b) where
   mySeq = either mySeq mySeq
@@ -523,7 +596,7 @@ instance Eq Sigma where
 instance Ord Sigma where
   Sigma g1 iD1 _ hash1 `compare` Sigma g2 iD2 _ hash2 =
       compare hash1 hash2 <> compare iD1 iD2 <> (ptrEquality g1 g2 ? EQ $ compare' g1 g2)
-    where compare' x y = compare x y -- let ret = compare x y in ret == EQ ? ret $ traceShow (x,y) ret
+    where compare' x y = compare x y
 
 instance Show Sigma where
   showsPrec n g = showsPrec n $ IntMap.toList $ ik'G g
@@ -536,8 +609,11 @@ check'Sigma g = all (\k -> 1<=k && k<=3) $ IntMap.elems $ ik'G g
 toList'GT :: SigmaTerm -> ([(Int,Int)],F)
 toList'GT = first $ IntMap.toList . ik'G
 
+toLists'G :: [Int] -> Sigma -> [([Int],Int)]
+toLists'G ls = map (first $ xs_i ls) . IntMap.toList . ik'G
+
 toLists'GT :: [Int] -> SigmaTerm -> ([([Int],Int)],F)
-toLists'GT ls = (first $ map $ first $ xs_i ls) . toList'GT
+toLists'GT ls = first $ toLists'G ls
 
 fromList'GT :: Int -> ([(Int,Int)],F) -> SigmaTerm
 fromList'GT iD = first $ \g -> sigma iD $ IntMap.fromListWith (error $ "fromList'GT: " ++ show g) g
@@ -977,7 +1053,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
                                  | gLRs@((gL,_):_) <- init $ tails _G1,
                                    gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
                     -- extract diagonal terms
-    (diag'',_G3)    = partition isDiag $ h3'==0 ? [] $ Map.toList $ fromList'MapGT _G2
+    (diag'',_G3)    = partition isDiag $ h3'==0 ? [] $ Map.toList $ fromList'MapGT _G2 -- mergeUnionsBy (comparing fst) (\(g,c) (_,c') -> (g,c+c')) $ map pure _G2
                     -- keep only max_rg_terms terms
     (_G4, trash')   = cut_terms True max_rg_terms _G3
     
@@ -1006,16 +1082,16 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     isDiag :: SigmaTerm -> Bool -- TODO get rid of nUnused >= size_g below
     isDiag (g,_) = not $ True {-nUnused >= size_g-} ? (any (flip IntSet.member unusedIs') $ IntMap.keys $ ik'G g)
                                            $ (any (flip IntMap.member $ ik'G g ) $ IntSet.toList unusedIs')
-      where size_g  = size'G g
-            nUnused = IntSet.size unusedIs'
+      --where size_g  = size'G g
+      --      nUnused = IntSet.size unusedIs'
     
     find_G4s :: Sigma -> Sigma -> [Sigma]
-    find_G4s g0 g1 = maybe (g0 == g1 ? [] $ assert (acommQ g_ g1 && acommQ g0 g_) $ find_G4s g_ g1 ++ find_G4s g0 g_) (pure . fst) $ icomm g0 g1
+    find_G4s g0 g1 = maybe (g0 == g1 ? [] $ {-assert (acommQ g_ g1 && acommQ g0 g_) $-} find_G4s g_ g1 ++ find_G4s g0 g_) (pure . fst) $ icomm g0 g1
       where g_        = sigma 0 $ IntMap.singleton i3 1
-            (i0s,i1s) = both (IntSet.intersection unusedIs . IntMap.keysSet . ik'G) (g0,g1)
-            i01s      = IntSet.intersection i0s i1s
-            is        = map IntSet.findMin $ IntSet.null i01s ? [i0s,i1s] $ [i01s]
-            g_'       = IntMap.fromListWith error_ $ [(i, head $ [1,2,3] \\ map (IntMap.findWithDefault 0 i . ik'G) [g0,g1]) | i <- is]
+          --(i0s,i1s) = both (IntSet.intersection unusedIs . IntMap.keysSet . ik'G) (g0,g1)
+          --i01s      = IntSet.intersection i0s i1s
+          --is        = map IntSet.findMin $ IntSet.null i01s ? [i0s,i1s] $ [i01s]
+          --g_'       = IntMap.fromListWith error_ $ [(i, head $ [1,2,3] \\ map (IntMap.findWithDefault 0 i . ik'G) [g0,g1]) | i <- is]
 
 stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
@@ -1079,7 +1155,7 @@ ee1d_slow' l0s x0s stab =
         modn i  = mod i n
         is l0 x = IntSet.fromList $ map modn [x*lY..(x+l0)*lY-1]
 
--- mutual information
+-- mutual information (not the same as wiki Multivariate_mutual_information!)
 mutual_information :: [IntSet] -> Ham -> Double
 mutual_information regions stab = sum (map ee $ drop1s regions) - (genericLength regions - 1) * ee regions
   where ee is         = ee_local (IntSet.unions is) stab
@@ -1140,8 +1216,27 @@ ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s,
 randoms :: Int -> [F]
 randoms seed = map toF $ Random.randoms $ Random.mkStdGen seed
 
+weighted_rands_x :: Hashable a => a -> Int -> [(Double,Int)]
+weighted_rands_x seed l = map ((\x -> (c * sqrt (1+x*x), flip mod l $ round x)) . sinh)
+                         $ Random.randomRs (-lnL,lnL) $ Random.mkStdGen $ Hashable.hash ("weighted_rands_x", seed)
+  where lnL = asinh $ fromIntegral l / 2
+        c   = lnL / (fromIntegral l / 2)
+
+-- all xs will be a multiple of z
+weighted_rands_xs :: Hashable a => a -> [Int] -> [(Double,[Int])]
+weighted_rands_xs seed ls = map (\wxs -> (product $ map fst wxs, map snd wxs)) $ transpose [weighted_rands_x (seed,n::Int) l | (n,l) <- zip [1..] ls]
+
+rands_x :: Hashable a => a -> Int -> [Int]
+rands_x seed l = Random.randomRs (0,l-1) $ Random.mkStdGen $ Hashable.hash ("rands_xs", seed)
+
+rands_xs :: Hashable a => a -> [Int] -> [[Int]]
+rands_xs seed ls = transpose [rands_x (seed,n::Int) l | (n,l) <- zip [1..] ls]
+
 i_xs :: [Int] -> [Int] -> Int
 i_xs ls xs = foldl' (\i (l,x) -> i*l + mod x l) 0 $ zipExactNote "i_xs" ls xs
+
+i_xs' :: [Int] -> [Int] -> Int
+i_xs' ls xs = i_xs ls $ xs ++ replicate (length ls - length xs) 0
 
 xs_i :: [Int] -> Int -> [Int]
 xs_i ls i0 = map snd $ init $ scanr (\l (i,_) -> divMod i l) (i0,0) ls
@@ -1213,7 +1308,7 @@ model_gen model ls [j,j'] | model == Haldane || model == HaldaneOpen = basic_gen
   where gen [x,0] rs_ =  let ((r,r'),rs) = first (splitAt 3) $ splitAt 6 rs_ in
           ( [([([x,1],k),([x,2],k)],j*r!!(k-1)) | k <- [1..3]] ++
             ( model == HaldaneOpen && x == head ls-1 ? []
-            $ [([([x,2],k),([x+1,1],k)],j'*r!!(k-1)) | k <- [1..3]])
+            $ [([([x,2],k),([x+1,1],k)],j'*r'!!(k-1)) | k <- [1..3]])
            , rs)
         gen [_,1] rs = ([],rs)
         gen _     _  = error $ show model
@@ -1360,9 +1455,11 @@ main = do
       calc_aCorr'Q   = length ln2_ls <= 1
       detailedQ      = False
       cut_powQ       = True
-      keep_diagQ     = length ln2_ls <= 1
+      keep_diagQ     = True -- length ln2_ls <= 1
+      full_diagQ     = True -- False
       lrmiQ          = False
-      calc_momentsQ  = True
+    --calc_momentsQ  = False
+      calc_corrLenQ  = True
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
       max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1372,10 +1469,11 @@ main = do
       n        = n'RG rg0
       l_1d     = length ls0 == 1 ? Just n $ Nothing
       z        = n // n0
-      seed'_   = Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
-      seed'    = alterSeedQ ? seed'_ $ seed
+      seed'    = not alterSeedQ ? seed $ Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
       rg0      = init'RG model ls0 $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
-      rg       = runRG $ rg0 { diag'RG            = not ternaryQ && keep_diagQ ? (Diag'MapTinyGT $ empty'MapTinyGT l_1d) $ NoDiag,
+      rg       = runRG $ rg0 { diag'RG            = ternaryQ || not keep_diagQ ? NoDiag
+                                                                               $ full_diagQ ? diag'RG rg0
+                                                                                            $ Diag'MapTinyGT $ empty'MapTinyGT l_1d,
                                trash'RG           = Nothing,
                                max_rg_terms'RG    = max_rg_terms,
                                max_wolff_terms'RG = max_wolff_terms }
@@ -1385,7 +1483,7 @@ main = do
   
   unless (0 < n) $ error_
   
-  putStr   "version:            "; putStrLn "160606.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "160616.0" -- year month day . minor
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
   putStr   "couplings:          "; print couplings
@@ -1407,7 +1505,7 @@ main = do
   
   putStr "missing stabilizers: "
   print $ n_missing
---mapM_ print $ map (toLists'GT ls) $ take 2 ordered_stab
+--mapM_ print $ map (toLists'GT ls) $ take 6 ordered_stab
   
   unless ternaryQ $ do
     putStr "Wolff errors: "
@@ -1505,24 +1603,77 @@ main = do
       putStrLn "LRMI: "
       mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
   
-  when calc_momentsQ $ do
-    let rand_iss samples n_ = take samples $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed'_, "moments", samples, n_)
-          where groups = (\(is0,is') -> is0 : groups is') . splitAt n_
-        calc_moments :: Int -> [Int] -> ([Int] -> Double) -> [(Int,Double,Double)]
-        calc_moments samples ns_ f = [ uncurry (n_,,) $ meanError $ map f $ rand_iss samples n_ | n_ <- ns_ ]
-        
-        mutual_information_moment is = case map IntSet.singleton $ IntSet.toList $ foldl1 xor'IntSet $ map IntSet.singleton is of
-                                            []      -> 1
-                                            regions -> mutual_information regions $ stab'RG rg
-        anderson_moment = uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . foldl1 (fromJust .* acomm'GT) . map ((,1) . sigma 0 . flip IntMap.singleton 3) -- TODO ToricCode
-    
-    putStr "mutual information moments: " -- [(n, avg MI(i1,..,in), error)]
-    print $ calc_moments (4*n) [2,3,4,6] mutual_information_moment
-    
-    putStr "anderson moments: " -- [(n, avg <Q_i1 .. Q_in>^2, error)]
-    print $ calc_moments (32*n) [2,4,8] anderson_moment
+--   when calc_momentsQ $ do
+--     let rand_iss samples n_ = take samples $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed', "rand_iss", samples, n_)
+--           where groups = (\(is0,is') -> is0 : groups is') . splitAt n_
+--         calc_moments :: Int -> [Int] -> ([Int] -> Double) -> [(Int,Double,Double)]
+--         calc_moments samples ns_ f = [ uncurry (n_,,) $ meanError $ map f $ rand_iss samples n_ | n_ <- ns_ ]
+--         
+--         mutual_information_moment is = case map IntSet.singleton $ IntSet.toList $ foldl1 xor'IntSet $ map IntSet.singleton is of
+--                                             []      -> 1
+--                                             regions -> mutual_information regions $ stab'RG rg
+--         anderson_moment = uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . foldl1 (fromJust .* acomm'GT) . map ((,1) . sigma 0 . flip IntMap.singleton 3) -- TODO ToricCode
+--     
+--     putStr "mutual information moments: " -- [(n, avg MI(i1,..,in), error)]
+--     print $ calc_moments (4*n) [2,3,4,6] mutual_information_moment
+--     
+--     putStr "anderson moments: " -- [(n, avg <Q_i1 .. Q_in>^2, error)]
+--     print $ calc_moments (32*n) [2,4,8] anderson_moment
   
-  let corr_z_xs_ggs = third (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
+  when calc_corrLenQ $ do
+    let l0 = head ls0
+        mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]
+        
+        structure_factor :: (Int -> Int -> [Double]) -> [(Int,Int,[Double],[Double])] -- ,(Double,Double))]
+        structure_factor f = zipWithExact (\(m,q) (ZipList s,ZipList ds) -> (m,q,s,ds)) mqs
+                           $ map (both (*fromIntegral n0) . weightedMeanError' pure) $ transpose
+                           $ [ {-(f0!!1 >=0 ? id $ traceShow (w,mod (head dxs + head ls0//2) (head ls0) - (head ls0)//2,f0)) $-}
+                               [ (w, pure (sin_^m * cos_) * ZipList f0)
+                               | (m,q) <- mqs,
+                                 let k0  = 2*pi/fromIntegral l0
+                                     cos_ = q==0 ? 1 $ mean $ map (\x -> cos $ k0 * fromIntegral (q*x)) dxs' ]
+                             | let seed_ = (seed',"structure_factor"),
+                               (xs_,(w,dxs)) <- take (round $ (\n_ -> n_*log n_) (2*fromIntegral n0 :: Double))
+                                              $ zip (         rands_xs seed_ ls0)
+                                                    (weighted_rands_xs seed_ ls0),
+                               let ys_   = zipWithExact (+) xs_ dxs
+                                   f0    = (f `on` i_xs' ls) xs_ ys_
+                                   dxs'  = catMaybes $ zipWithExact justIf (map (==l0) ls0) dxs
+                                   sin_  = product $ zipWithExact ((\l x -> l/pi * sin (pi*x/l)) `on` fromIntegral) ls0 dxs ]
+        
+        offset f = mean [f i j | i <- [0,z .. n],
+                                 let j = i_xs' ls $ zipWith (+) (map (//2) ls0) $ xs_i ls i ]
+        
+        ising_f k = \i j -> let f0 = f i j
+                            in  {-assert (i /= j || f0 /= 0)-} [f0, f0 - offset_]
+          where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust . uncurry acomm . both (sigma 0 . flip IntMap.singleton k)
+                offset_ = offset f
+        
+        anderson_fs = case model of
+                           Ising -> [("ZZ", ising_f 3)]
+                           XYZ   -> [("XX", ising_f 1), ("YY", ising_f 2), ("ZZ", ising_f 3)]
+                           _     -> []
+        
+        mutual_information_f = \i j -> let f0 = f i j
+                                       in {-assert (f0 >= head (ising_f 3 i j)) $-} [f0, f0 - offset_, fc i j]
+          where ee is     = ee_local (IntSet.fromList is) (stab'RG rg)
+                f i j     = cMI i j []
+                offset_   = offset f
+                cMI i j k = i == j ? 1 $ (\i' j' -> ee (i'++k) + ee (j'++k) - ee (i'++j'++k) - ee k) (unit_cell i) (unit_cell j)
+                fc  i j   = cMI i j $ map (i_xs' ls) $ sequenceA $ (zipWith3 g ls0 `on` xs_i ls) i j
+                  where g l x y = (\k -> [k-l//8+1..k+l//8-boole (even $ x+y)]) $ snd $ head $ reverse $ sortWith fst
+                                $ map (\x' -> (reverse $ sort $ map (modDist l . (x'-)) [x,y], x'))
+                                $ (\x' -> [x',x'+l//2]) $ quot (x + y) 2
+                unit_cell i = [i..i+z-1]
+    
+    forM_ anderson_fs $ \(name,f) -> do
+      putStr $ "anderson " ++ name ++ " structure factor: " -- [(m, q, ZZ(q), error)]
+      print $ structure_factor f
+    
+    putStr "mutual information structure factor: " -- [(m, q, MI(q), error)]
+    print $ structure_factor mutual_information_f
+  
+  let corr_z_xs_ggs = third3 (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
         ToricCode -> wilson_z_xs_ggs
         Z2Gauge   -> wilson_z_xs_ggs
         MajChain  -> let (a,b,c,d) = ([(0,3)], [(0,1),(1,1)], [(0,3),(1,3)], [(0,1),(2,1)])

@@ -6,7 +6,7 @@
 -- :set args 1 XYZ [4] [1,1,1] 1
 -- :trace main
 
-{-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances #-} -- OverloadedLists
+{-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
 -- :set -XTupleSections
 
 {-# OPTIONS -Wall -Wno-unused-top-binds -fno-warn-unused-imports -Wno-orphans -O -optc-O2 -optc-march=native -optc-mfpmath=sse #-}
@@ -30,6 +30,7 @@ import Data.Hashable as Hashable
 import Data.List
 import Data.Maybe
 import Data.Monoid
+import Data.NumInstances.Tuple
 import Data.Ord
 import Data.Tuple
 import Debug.Trace
@@ -39,6 +40,8 @@ import Safe.Exact
 import System.Environment
 import System.CPUTime
 import System.Exit (exitSuccess, exitFailure)
+
+import qualified System.Random as Random
 
 import Data.Strict (Pair(..))
 import qualified Data.Strict as S
@@ -57,8 +60,6 @@ import qualified Data.IntMap.Strict as IntMap hiding (fromList, insert, delete, 
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
-
-import qualified System.Random as Random
 
 -- debug
 
@@ -172,7 +173,7 @@ getArgs7 defaults = do
   args <- getArgs
   let n = 7
       [x1,x2,x3,x4,x5,x6,x7] = args ++ drop (length defaults + length args - n) defaults
-  return (read x1, read x2, read x3, read x4, read x5, read x6, read x7)
+  return (readNote "1" x1, readNote "2" x2, readNote "3" x3, readNote "4" x4, readNote "5" x5, readNote "6" x6, readNote "7" x7)
 
 infixl 1 `applyIf`
 applyIf :: (a -> a) -> (a -> Bool) -> a -> a
@@ -242,8 +243,7 @@ isPow2 :: Int -> Bool
 isPow2 x = popCount x == 1
 
 mean :: Floating f => [f] -> f
-mean = (\(n,x) -> x/fromIntegral n)
-     . foldl' (\(!n,!x) x0 -> (n+1, x+x0)) (0::Int,0)
+mean = (\(n,x) -> x/fromIntegral n) . sum . map (\x -> (1::Int,x))
 
 rms :: Floating f => [f] -> f
 rms = sqrt . mean . map sq
@@ -252,22 +252,15 @@ rss :: Floating f => [f] -> f
 rss = sqrt . sum . map sq
 
 weightedMeanError :: (Floating f, MySeq f) => [(f, f)] -> (f, f)
-weightedMeanError = weightedMeanError' id
+weightedMeanError = weightedMeanError' (*)
 
-weightedMeanError' :: (Floating wf, MySeq wf, Floating f, MySeq f) => (wf -> f) -> [(wf, f)] -> (f, f)
-weightedMeanError' f = (\(w,wx,wxx) -> (wx/w, sqrt (wxx - wx*wx/w) / w)) . first3 f
-                     . foldl' (\(!w,!wx,!wxx) (w0,x0) -> myForce (w+w0, wx+f w0*x0, wxx+f w0*x0*x0)) (0,0,0)
+weightedMeanError' :: (Fractional f, MySeq f, Floating v, MySeq v) => (f -> v -> v)  -> [(f, v)] -> (v, v)
+weightedMeanError' (*&) = (\(rw,wx,wxx) -> (rw*&wx, rw *& sqrt (wxx - rw*&(wx*wx))))
+                     . first3 (recip) . foldl' (myForce .* (+)) 0 . map (\(w,x) -> (w,w*&x,w*&(x*x)))
 
 meanError :: Floating f => [f] -> (f, f)
-meanError = (\(n,x,xx) -> (x/n, sqrt ((n*xx - x*x)/(n-1)) / n)) . first3 fromIntegral
-          . foldl' (\(!n,!x,!xx) x0 -> (n+1, x+x0, xx+x0*x0)) (0::Int,0,0)
-
--- meanError' :: Floating f => [f] -> (f, f)
--- meanError' = (\(n,x,xx) -> (x/n, sqrt (xx - x*x/n) / n)) . first3 fromIntegral
---            . foldl' (\(n,x,xx) x0 -> (n+1, x+x0, xx+x0*x0)) (0::Int,0,0)
--- 
--- meanError'' :: Floating f => [f] -> (f, f)
--- meanError'' = weightedMeanError . zip (repeat 1)
+meanError = (\(n,x,xx) -> (x/n, sqrt ((n*xx - x*x)/(n-1)) / n))
+          . first3 fromIntegral . sum . map (\x -> (1::Int,x,x*x))
 
 epsilon, epsilon_2 :: Fractional f => f
 epsilon   = 2 ^^ (-52::Int)
@@ -290,41 +283,17 @@ modDifferences l is = (head is + l - last is) : zipWith (-) (tail is) is
 modDist :: Int -> Int -> Int
 modDist l x = abs $ mod (x+l//2) l - l//2
 
--- ZipList
+-- Vector
 
-instance Num a => Num (ZipList a) where
-  (+) = liftA2 (+)
-  (-) = liftA2 (-)
-  (*) = liftA2 (*)
-  negate      = fmap negate
-  abs         = fmap abs
-  signum      = fmap signum
-  fromInteger = pure . fromInteger
+newtype V2 a = V2 (a,a  ) deriving (Functor, Foldable, Num, Fractional, Floating, MySeq)
+newtype V3 a = V3 (a,a,a) deriving (Functor, Foldable, Num, Fractional, Floating, MySeq)
 
-instance Fractional a => Fractional (ZipList a) where
-  recip        = fmap recip
-  (/)          = liftA2 (/)
-  fromRational = pure . fromRational
+instance Show a => Show (V2 a) where  show = show . toList
+instance Show a => Show (V3 a) where  show = show . toList
 
-instance Floating a => Floating (ZipList a) where
-    pi      = pure pi
-    exp     = fmap exp
-    sqrt    = fmap sqrt
-    log     = fmap log
-    (**)    = liftA2 (**)
-    logBase = liftA2 logBase
-    sin     = fmap sin
-    tan     = fmap tan
-    cos     = fmap cos
-    asin    = fmap asin
-    atan    = fmap atan
-    acos    = fmap acos
-    sinh    = fmap sinh
-    tanh    = fmap tanh
-    cosh    = fmap cosh
-    asinh   = fmap asinh
-    atanh   = fmap atanh
-    acosh   = fmap acosh
+infixl 7 *^
+(*^) :: (Functor f, Num a) => a -> f a -> f a
+(*^) a = fmap (a*)
 
 -- Force
 
@@ -345,9 +314,6 @@ instance MySeq a => MySeq (Maybe a) where
   mySeq = mySeq'Foldable
 
 instance MySeq a => MySeq [a] where
-  mySeq = mySeq'Foldable
-
-instance MySeq a => MySeq (ZipList a) where
   mySeq = mySeq'Foldable
 
 instance (MySeq a, MySeq b) => MySeq (a,b) where
@@ -563,7 +529,6 @@ instance Ord AbsF where
 
 type SigmaHash = Int
 
--- TODO maybe add a ik_diag'G for ham'RG
 data Sigma = Sigma {
   ik'G   :: !(IntMap Int),
   iD'G   :: !Int,
@@ -572,18 +537,26 @@ data Sigma = Sigma {
 
 sigma :: Int -> IntMap Int -> Sigma
 sigma iD ik = g
-  where g = Sigma ik iD default_meta'G $ Hashable.hash g
+  where g = Sigma ik iD default_meta'G $ calc_hash'G g
 
 data IntPair = IntPair !Int !Int
 
+calc_hash'G :: Sigma -> SigmaHash
+calc_hash'G g = (\(IntPair s x) -> hashWithSalt s x) $ IntMap.foldlWithKey' f (IntPair (hash $ iD'G g) (0::Int)) $ ik'G g
+  where f (IntPair s n) k x = IntPair (hashWithSalt s k `hashWithSalt` x) (n + 1)
+
+-- calc_hash'G :: Sigma -> SigmaHash
+-- calc_hash'G g = (\(s,x) -> hashWithSalt s x) $ IntMap.foldlWithKey' f (hash $ iD'G g, 0::Int) $ ik'G g
+--   where f (!s,!n) k x = (hashWithSalt s k `hashWithSalt` x, n + 1)
+
 -- http://hackage.haskell.org/package/hashable-1.2.4.0/docs/src/Data.Hashable.Class.html#line-452
 instance Hashable Sigma where
-  hashWithSalt salt g = (\(IntPair s x) -> hashWithSalt s x) $ IntMap.foldlWithKey' f (IntPair (hashWithSalt salt $ iD'G g) (0::Int)) $ ik'G g
-    where f (IntPair s n) k x = IntPair (hashWithSalt s k `hashWithSalt` x) (n + 1)
+  hashWithSalt salt = hashWithSalt salt . hash'G
+  hash = hash'G
 
 set_iD'G :: Int -> Sigma -> Sigma
 set_iD'G iD g = g'
-  where g' = g { iD'G = iD, hash'G = Hashable.hash g' }
+  where g' = g { iD'G = iD, hash'G = calc_hash'G g' }
 
 set_meta'G :: Meta'G -> Sigma -> Sigma
 set_meta'G meta g = g { meta'G = meta }
@@ -1222,12 +1195,11 @@ weighted_rands_x seed l = map ((\x -> (c * sqrt (1+x*x), flip mod l $ round x)) 
   where lnL = asinh $ fromIntegral l / 2
         c   = lnL / (fromIntegral l / 2)
 
--- all xs will be a multiple of z
 weighted_rands_xs :: Hashable a => a -> [Int] -> [(Double,[Int])]
 weighted_rands_xs seed ls = map (\wxs -> (product $ map fst wxs, map snd wxs)) $ transpose [weighted_rands_x (seed,n::Int) l | (n,l) <- zip [1..] ls]
 
 rands_x :: Hashable a => a -> Int -> [Int]
-rands_x seed l = Random.randomRs (0,l-1) $ Random.mkStdGen $ Hashable.hash ("rands_xs", seed)
+rands_x seed l = Random.randomRs (0,l-1) $ Random.mkStdGen $ Hashable.hash ("rands_x", seed)
 
 rands_xs :: Hashable a => a -> [Int] -> [[Int]]
 rands_xs seed ls = transpose [rands_x (seed,n::Int) l | (n,l) <- zip [1..] ls]
@@ -1452,11 +1424,11 @@ main = do
       ternaryQ       = False
       calc_EEQ       = True
       calc_aCorrQ    = model /= ToricCode
-      calc_aCorr'Q   = length ln2_ls <= 1
+      calc_aCorr'Q   = False -- length ln2_ls <= 1
       detailedQ      = False
       cut_powQ       = True
-      keep_diagQ     = True -- length ln2_ls <= 1
-      full_diagQ     = True -- False
+      keep_diagQ     = length ln2_ls <= 1
+      full_diagQ     = False
       lrmiQ          = False
     --calc_momentsQ  = False
       calc_corrLenQ  = True
@@ -1470,7 +1442,7 @@ main = do
       l_1d     = length ls0 == 1 ? Just n $ Nothing
       z        = n // n0
       seed'    = not alterSeedQ ? seed $ Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
-      rg0      = init'RG model ls0 $ init_generic'Ham seed $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
+      rg0      = init'RG model ls0 $ init_generic'Ham seed' $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = ternaryQ || not keep_diagQ ? NoDiag
                                                                                $ full_diagQ ? diag'RG rg0
                                                                                             $ Diag'MapTinyGT $ empty'MapTinyGT l_1d,
@@ -1624,16 +1596,18 @@ main = do
     let l0 = head ls0
         mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]
         
-        structure_factor :: (Int -> Int -> [Double]) -> [(Int,Int,[Double],[Double])] -- ,(Double,Double))]
-        structure_factor f = zipWithExact (\(m,q) (ZipList s,ZipList ds) -> (m,q,s,ds)) mqs
-                           $ map (both (*fromIntegral n0) . weightedMeanError' pure) $ transpose
+        structure_factor :: (Functor v, Floating (v Double), MySeq (v Double))
+                         => (Int -> Int -> v Double) -> [(Int,Int,v Double,v Double)]
+        structure_factor f = zipWithExact (\(m,q) (s,ds) -> (m,q,s,ds)) mqs
+                           $ map (both (fromIntegral n0*^) . weightedMeanError' (*^)) $ transpose
                            $ [ {-(f0!!1 >=0 ? id $ traceShow (w,mod (head dxs + head ls0//2) (head ls0) - (head ls0)//2,f0)) $-}
-                               [ (w, pure (sin_^m * cos_) * ZipList f0)
+                               [ (w, (sin_^m * cos_) *^ f0)
                                | (m,q) <- mqs,
                                  let k0  = 2*pi/fromIntegral l0
                                      cos_ = q==0 ? 1 $ mean $ map (\x -> cos $ k0 * fromIntegral (q*x)) dxs' ]
                              | let seed_ = (seed',"structure_factor"),
-                               (xs_,(w,dxs)) <- take (round $ (\n_ -> n_*log n_) (2*fromIntegral n0 :: Double))
+                               (xs_,(w,dxs)) <- --[([x],(1,[y])) | x <- [0..head ls-1], y <- [0..head ls-1]],
+                                                take (round $ (\n_ -> n_*log n_) (2*fromIntegral n0 :: Double))
                                               $ zip (         rands_xs seed_ ls0)
                                                     (weighted_rands_xs seed_ ls0),
                                let ys_   = zipWithExact (+) xs_ dxs
@@ -1645,7 +1619,7 @@ main = do
                                  let j = i_xs' ls $ zipWith (+) (map (//2) ls0) $ xs_i ls i ]
         
         ising_f k = \i j -> let f0 = f i j
-                            in  {-assert (i /= j || f0 /= 0)-} [f0, f0 - offset_]
+                            in  {-assert (i /= j || f0 /= 0)-} V2 (f0, f0 - offset_)
           where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust . uncurry acomm . both (sigma 0 . flip IntMap.singleton k)
                 offset_ = offset f
         
@@ -1655,11 +1629,11 @@ main = do
                            _     -> []
         
         mutual_information_f = \i j -> let f0 = f i j
-                                       in {-assert (f0 >= head (ising_f 3 i j)) $-} [f0, f0 - offset_, fc i j]
+                                       in {-assert (f0 >= head (ising_f 3 i j)) $-} V3 (f0, f0 - offset_, fc i j)
           where ee is     = ee_local (IntSet.fromList is) (stab'RG rg)
                 f i j     = cMI i j []
                 offset_   = offset f
-                cMI i j k = i == j ? 1 $ (\i' j' -> ee (i'++k) + ee (j'++k) - ee (i'++j'++k) - ee k) (unit_cell i) (unit_cell j)
+                cMI i j k = i == j ? 1 $ (\i' j' -> ee (i'++k) + ee (j'++k) - ee (i'++j'++k) - ee k) (unit_cell i) (unit_cell j) -- TODO make faster since k can be large
                 fc  i j   = cMI i j $ map (i_xs' ls) $ sequenceA $ (zipWith3 g ls0 `on` xs_i ls) i j
                   where g l x y = (\k -> [k-l//8+1..k+l//8-boole (even $ x+y)]) $ snd $ head $ reverse $ sortWith fst
                                 $ map (\x' -> (reverse $ sort $ map (modDist l . (x'-)) [x,y], x'))
@@ -1667,10 +1641,10 @@ main = do
                 unit_cell i = [i..i+z-1]
     
     forM_ anderson_fs $ \(name,f) -> do
-      putStr $ "anderson " ++ name ++ " structure factor: " -- [(m, q, ZZ(q), error)]
+      putStr $ "anderson " ++ name ++ " structure factor: " -- [(m, q, [ZZ(q)^m, ZZ - offset], error)]
       print $ structure_factor f
     
-    putStr "mutual information structure factor: " -- [(m, q, MI(q), error)]
+    putStr "mutual information structure factor: " -- [(m, q, [MI(q)^m, MI - offset, conditional MI], error)]
     print $ structure_factor mutual_information_f
   
   let corr_z_xs_ggs = third3 (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of

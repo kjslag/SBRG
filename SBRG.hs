@@ -1140,33 +1140,31 @@ ee1d :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,Double,Double
 ee1d ls cutStabs l0s x0s = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ ls cutStabs l0s x0s
 
 ee1d_ :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,[Double])]
-ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
-  where
-    n    = product ls
-    lx   = head $ ls
-    lY   = n // lx
-    modx x = mod x lx
-    modn i = mod i n
-    -- entanglement entropy of the regions [x..x+l0-1],[x+x0..x+x0+l0-1]
-    regionEE :: Int -> Int -> Int -> Double
-    regionEE l0 x0 x = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
-      where regionStabs = zipWith sigma [0..] [g'
-                          | g <- map ik'G $ cutStabs [x,x+l0,x+x0,x+x0+l0],
-                            let g' = (IntMap.union `on` selRegion g . (*lY)) x (modx$x+x0),
-                            not (IntMap.null g') && ((/=) `on` IntMap.keys) g g']
-            -- intersect g with region [i..i+l-1]
-            selRegion :: IntMap Int -> Int -> IntMap Int
-            selRegion g i = (if i+l<n then                fst . IntMap.split        (i+l)
-                                      else IntMap.union $ fst $ IntMap.split (modn $ i+l) g)
+ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE ls cutStabs $ nub [(l0,x),(l0,x+x0)] | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
+  where lx = head ls
+
+-- entanglement entropy of the regions (l,x) -> [x..x+l-1]
+regionEE :: [Int] -> ([Int] -> [Sigma]) -> [(Int,Int)] -> Double
+regionEE ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
+  where n  = product ls
+        lY = product $ tail ls
+        lxs = map (second $ flip mod $ head ls) lxs_
+        regionStabs = zipWith sigma [0..] [g'
+                      | g <- map ik'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
+                        let g' = IntMap.unions $ map (selRegion g . both (*lY)) lxs,
+                        not (IntMap.null g') && ((/=) `on` IntMap.keys) g g']
+        -- intersect g with region [i..i+l-1]
+        selRegion :: IntMap Int -> (Int,Int) -> IntMap Int
+        selRegion g (l,i) = (if i+l<n then                fst . IntMap.split (i+l)
+                                      else IntMap.union $ fst $ IntMap.split (i+l-n) g)
                           $ snd $ IntMap.split (i-1) g
-            l = l0*lY
-    acommMat :: [Sigma] -> IntMap IntSet
-    acommMat gs  = foldl' f IntMap.empty gs
-      where  gs' = (zero'Ham ls) +# map (,1::F) gs
-             add iD1 iD2 = IntMap.insertWith IntSet.union iD1 $ IntSet.singleton iD2
-             f mat0 g0 = foldl'_ (\iD -> add iD0 iD . add iD iD0) iDs mat0
-               where iDs = map iD'G $ filter (\g -> iD'G g < iD0 && acommQ g g0) $ map fst $ acommCandidates g0 gs'
-                     iD0 = iD'G g0
+        acommMat :: [Sigma] -> IntMap IntSet
+        acommMat gs  = foldl' f IntMap.empty gs
+          where  gs' = (zero'Ham ls) +# map (,1::F) gs
+                 add iD1 iD2 = IntMap.insertWith IntSet.union iD1 $ IntSet.singleton iD2
+                 f mat0 g0 = foldl'_ (\iD -> add iD0 iD . add iD iD0) iDs mat0
+                   where iDs = map iD'G $ filter (\g -> iD'G g < iD0 && acommQ g g0) $ map fst $ acommCandidates g0 gs'
+                         iD0 = iD'G g0
 
 -- stabilizers that may have been cut by [x..x+lx/2-1]
 calcCutStabs :: Int -> Ham -> [[Int] -> [Sigma]]
@@ -1444,10 +1442,11 @@ main = do
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
       max_wolff_terms = justIf' (>=0) max_wolff_terms_
       ls0      = small_lsQ ? ln2_ls $ map (2^) ln2_ls
+      dim      = length ls0
       ls       = ls'RG rg0
       n0       = product ls0
       n        = n'RG rg0
-      l_1d     = length ls0 == 1 ? Just n $ Nothing
+      l_1d     = dim == 1 ? Just n $ Nothing
       z        = n // n0
       seed'    = not alterSeedQ ? seed $ Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
       rg0      = init'RG model ls0 $ init_generic'Ham seed' $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
@@ -1500,7 +1499,7 @@ main = do
     putStr "stabilizer sizes: "
     print $ cut_pow2 $ map (size'G . fst) $ ordered_stab
     
-    when (length ls0 == 1) $ do
+    when (dim == 1) $ do
       putStr "stabilizer lengths: "
       print $ cut_pow2 $ map (length'G (head ls) . fst) $ ordered_stab
   
@@ -1539,7 +1538,7 @@ main = do
           putStr $ name ++ " size histo: "
           print $ generic_histo nsS size'TinyG gcs
           
-          when (length ls0 == 1) $ do
+          when (dim == 1) $ do
             putStr $ name ++ " length histo: "
             print $ length_histo nsL gcs
             
@@ -1562,7 +1561,7 @@ main = do
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
-  let cutStabs = calcCutStabs (length ls0) (stab'RG rg)
+  let cutStabs = calcCutStabs dim (stab'RG rg)
   
   when calc_EEQ $ do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
@@ -1585,61 +1584,58 @@ main = do
       putStrLn "LRMI: "
       mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
   
---   when calc_momentsQ $ do
---     let rand_iss samples n_ = take samples $ groups $ map (*z) $ Random.randomRs (0,n0-1) $ Random.mkStdGen $ Hashable.hash (seed', "rand_iss", samples, n_)
---           where groups = (\(is0,is') -> is0 : groups is') . splitAt n_
---         calc_moments :: Int -> [Int] -> ([Int] -> Double) -> [(Int,Double,Double)]
---         calc_moments samples ns_ f = [ uncurry (n_,,) $ meanError $ map f $ rand_iss samples n_ | n_ <- ns_ ]
---         
---         mutual_information_moment is = case map IntSet.singleton $ IntSet.toList $ foldl1 xor'IntSet $ map IntSet.singleton is of
---                                             []      -> 1
---                                             regions -> mutual_information regions $ stab'RG rg
---         anderson_moment = uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . foldl1 (fromJust .* acomm'GT) . map ((,1) . sigma 0 . flip IntMap.singleton 3) -- TODO ToricCode
---     
---     putStr "mutual information moments: " -- [(n, avg MI(i1,..,in), error)]
---     print $ calc_moments (4*n) [2,3,4,6] mutual_information_moment
---     
---     putStr "anderson moments: " -- [(n, avg <Q_i1 .. Q_in>^2, error)]
---     print $ calc_moments (32*n) [2,4,8] anderson_moment
-  
   when calc_corrLenQ $ do
-    let l0 = head ls0
-        mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]
+    let mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]
         
         structure_factor :: (Functor v, Floating (v Double), MySeq (v Double))
-                         => (Int -> Int -> v Double) -> [(Int,Int,v Double,v Double)]
-        structure_factor f = zipWithExact (\(m,q) (s,ds) -> (m,q,s,ds)) mqs
+                         => Int -> ([Int] -> [Int] -> v Double) -> [(Int,Int,v Double,v Double)]
+        structure_factor d0 f = zipWithExact (\(m,q) (s,ds) -> (m,q,s,ds)) mqs
                            $ map (both (fromIntegral n0*^) . weightedMeanError' (*^)) $ transpose
-                           $ [ {-(f0!!1 >=0 ? id $ traceShow (w,mod (head dxs + head ls0//2) (head ls0) - (head ls0)//2,f0)) $-}
-                               [ (w, (sin_^m * cos_) *^ f0)
+                           $ [ [ (w, (sin2_^(m//2) * cos_) *^ f0)
                                | (m,q) <- mqs,
                                  let k0  = 2*pi/fromIntegral l0
                                      cos_ = q==0 ? 1 $ mean $ map (\x -> cos $ k0 * fromIntegral (q*x)) dxs' ]
                              | let seed_ = (seed',"structure_factor"),
                                (xs_,(w,dxs)) <- --[([x],(1,[y])) | x <- [0..head ls-1], y <- [0..head ls-1]],
                                                 take (round $ (\n_ -> n_*log n_) (2*fromIntegral n0 :: Double))
-                                              $ zip (         rands_xs seed_ ls0)
-                                                    (weighted_rands_xs seed_ ls0),
+                                              $ zip (         rands_xs seed_ ls0')
+                                                    (weighted_rands_xs seed_ ls0'),
                                let ys_   = zipWithExact (+) xs_ dxs
-                                   f0    = (f `on` i_xs' ls) xs_ ys_
-                                   dxs'  = catMaybes $ zipWithExact justIf (map (==l0) ls0) dxs
-                                   sin_  = product $ zipWithExact ((\l x -> l/pi * sin (pi*x/l)) `on` fromIntegral) ls0 dxs ]
+                                   f0    = f xs_ ys_
+                                   dxs'  = catMaybes $ zipWithExact justIf (map (==l0) ls0') dxs
+                                   sin2_ = sum $ map sq $ zipWithExact ((\l x -> l/pi * sin (pi*x/l)) `on` fromIntegral) ls0' dxs ]
+          where l0   = head ls0
+                ls0' = take d0 ls0
+        
+      --structure_factor_1d :: (Int -> Int -> v Double) -> [(Int,Int,v Double,v Double)]
+        structure_factor_1d f = structure_factor 1 (f `on` the)
+        
+      --structure_factor_nd :: (Int -> Int -> v Double) -> [(Int,Int,v Double,v Double)]
+        structure_factor_nd f = structure_factor dim (f `on` i_xs' ls)
         
         offset f = mean [f i j | i <- [0,z .. n],
                                  let j = i_xs' ls $ zipWith (+) (map (//2) ls0) $ xs_i ls i ]
         
-        ising_f k = \i j -> let f0 = f i j
-                            in  {-assert (i /= j || f0 /= 0)-} V2 (f0, f0 - offset_)
+        ising_f k = \i j -> let f0 = (f `on` i_xs' ls) i j
+                            in  (f0, f0 - offset_)
           where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust . uncurry acomm . both (sigma 0 . flip IntMap.singleton k)
                 offset_ = offset f
         
         anderson_fs = case model of
-                           Ising -> [("ZZ", ising_f 3)]
-                           XYZ   -> [("XX", ising_f 1), ("YY", ising_f 2), ("ZZ", ising_f 3)]
+                           Ising -> [("ZZ", dim, ising_f 3)]
+                           XYZ   -> [("XX", dim, ising_f 1), ("YY", dim, ising_f 2), ("ZZ", dim, ising_f 3)]
                            _     -> []
         
+        unit_cell i = [i..i+z-1]
+        
+        mutual_information_0d_f = \i j -> let f0 = f i j
+                                          in  V2 (f0, f0 - offset_)
+          where ee is = ee_local (IntSet.fromList is) (stab'RG rg)
+                f i j = i == j ? 1 $ ((\i' j' -> ee i' + ee j' - ee (i'++j')) `on` unit_cell) i j
+                offset_   = offset f
+        
         mutual_information_f = \i j -> let f0 = f i j
-                                       in {-assert (f0 >= head (ising_f 3 i j)) $-} V3 (f0, f0 - offset_, fc i j)
+                                       in  V3 (f0, f0 - offset_, fc i j)
           where ee is     = ee_local (IntSet.fromList is) (stab'RG rg)
                 f i j     = cMI i j []
                 offset_   = offset f
@@ -1648,14 +1644,17 @@ main = do
                   where g l x y = (\k -> [k-l//8+1..k+l//8-boole (even $ x+y)]) $ snd $ head $ reverse $ sortWith fst
                                 $ map (\x' -> (reverse $ sort $ map (modDist l . (x'-)) [x,y], x'))
                                 $ (\x' -> [x',x'+l//2]) $ quot (x + y) 2
-                unit_cell i = [i..i+z-1]
     
-    forM_ anderson_fs $ \(name,f) -> do
+    forM_ anderson_fs $ \(name,d0,f) -> do
       putStr $ "anderson " ++ name ++ " structure factor: " -- [(m, q, [ZZ(q)^m, ZZ - offset], error)]
-      print $ structure_factor f
+      print $ structure_factor d0 f
     
     putStr "mutual information structure factor: " -- [(m, q, [MI(q)^m, MI - offset, conditional MI], error)]
-    print $ structure_factor mutual_information_f
+    print $ structure_factor_1d mutual_information_f
+    
+    when (dim > 1) $ do
+      putStr "mutual information 0d structure factor: " -- [(m, q, [MI(q)^m, MI - offset, conditional MI], error)]
+      print $ structure_factor_nd mutual_information_0d_f
   
   let corr_z_xs_ggs = third3 (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
         ToricCode -> wilson_z_xs_ggs

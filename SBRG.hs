@@ -1142,9 +1142,10 @@ ee1d l0s x0s stab = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee
 ee1d_ :: [Int] -> [Int] -> Ham -> [(Int,Int,[Double])]
 ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
   where
-    n  = n'Ham stab
-    lx =           head $ ls'Ham stab
-    lY = product $ tail $ ls'Ham stab
+    n    = n'Ham stab
+    lx   =           head $ ls'Ham stab
+    lx_2 = lx // 2
+    lY   = product $ tail $ ls'Ham stab
     -- entanglement entropy of the regions [x..x+l0-1],[x+x0..x+x0+l0-1]
     regionEE :: Int -> Int -> Int -> Double
     regionEE l0 x0 x = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
@@ -1152,8 +1153,7 @@ ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s,
                           | g <- map ik'G $ Set.toList localStabs' ++ nonlocalStabs,
                             let g' = (IntMap.union `on` selRegion g . (*lY)) x (modx$x+x0),
                             not (IntMap.null g') && ((/=) `on` IntMap.keys) g g']
-            localStabs' = Set.unions $ map (findWithDefault' Set.empty & flip $ cutStabs) $ nub $ map modx [x,x+l0,x+x0,x+x0+l0]
-            findWithDefault' x_ y_ z_ = IntMap.findWithDefault x_ y_ z_
+            localStabs' = cutStabs [x,x+l0,x+x0,x+x0+l0]
             -- intersect g with region [i..i+l-1]
             selRegion :: IntMap Int -> Int -> IntMap Int
             selRegion g i = (if i+l<n then                fst . IntMap.split        (i+l)
@@ -1170,21 +1170,44 @@ ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s,
                where iDs = map iD'G $ filter (\g -> iD'G g < iD0 && acommQ g g0) $ map fst $ acommCandidates g0 gs'
                      iD0 = iD'G g0
     -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
-    -- TODO: I think this works even if lx is odd, but I'm not certain
-    cutStabs :: IntMap (Set Sigma)
-    cutStabs = IntMap.unionsWith Set.union
-             $ map (\g -> IntMap.fromListWith error_
-                        $ map (,Set.singleton g) $ cutRegions $ intUnion $ map (flip div lY) $ IntMap.keys $ ik'G g) localStabs
+    cutStabs :: [Int] -> Set Sigma
+    cutStabs = Set.unions . map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) . nub . map (flip mod lx_2)
+    cutStabs0 :: IntMap (Set Sigma)
+    cutStabs0 = IntMap.fromListWith Set.union
+              $ concatMap (\g -> map (,Set.singleton g) $ cutRegions $ intUnion $ map (flip div lY) $ IntMap.keys $ ik'G g) localStabs
       where cutRegions :: [Int] -> [Int]
-            cutRegions xs = concatMap region0 $ zipExact xs (tail xs ++ [head xs])
-            region0 (x,x') | modx (x'-x) <= lx_2 = (region `on` modx) (x      +1) (x'     +1)
-                           | otherwise           = (region `on` modx) (x'-lx_2+1) (x +lx_2+1)
-            region :: Int -> Int -> [Int]
-            region x x' = x<=x' ? [x..x'-1] $ [0..x'-1] ++ [x..lx-1]
-            lx_2 = div lx 2
+            cutRegions xs = concatMap region0 $ zipExact xs (rotateLeft 1 xs)
+            region0 (x,x') | dx <= lx_2 = map (flip mod lx_2) [x+1 .. x+dx]
+                           | otherwise  = region0 (x',x)
+              where dx = modx $ x' - x
     -- local and nonlocal stabilizers
     localStabs, nonlocalStabs :: [Sigma]
     [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
+
+-- stabilizers that may have been cut
+calcCutStabs :: Int -> Ham -> [[Int] -> [Sigma]]
+calcCutStabs d stab = map cutStabs [0..d-1]
+  where
+    ls = ls'Ham stab
+    localStabs, nonlocalStabs :: [Sigma]
+    [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
+    cutStabs d0 = \xs -> localStabs' xs ++ nonlocalStabs -- TODO check that the lambda actually works
+      where
+        localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) $ nub $ map modx_2 xs
+        lx    = ls !! d0
+        lx_2  = lx // 2
+        x_i i = (!!d0) $ xs_i ls i
+        modx   x = mod x lx
+        modx_2 x = mod x lx_2
+        cutStabs0 :: IntMap (Set Sigma)
+        cutStabs0 = IntMap.fromListWith Set.union $ concatMap f localStabs
+        f :: Sigma -> [(Int,Set Sigma)]
+        f g = map (,Set.singleton g) $ cutRegions $ intUnion $ map x_i $ IntMap.keys $ ik'G g
+        cutRegions :: [Int] -> [Int]
+        cutRegions xs = concatMap region0 $ zipExact xs (rotateLeft 1 xs)
+        region0 (x,x') | dx <= lx_2 = map modx_2 [x+1 .. x+dx]
+                       | otherwise  = region0 (x',x)
+          where dx = modx $ x' - x
 
 randoms :: Int -> [F]
 randoms seed = map toF $ Random.randoms $ Random.mkStdGen seed

@@ -1136,62 +1136,46 @@ mutual_information regions stab = sum (map ee $ drop1s regions) - (genericLength
         drop1s (x:xs) = xs : map (x:) (drop1s xs)
 
 -- entanglement entropy: arguments: list of region sizes and stabilizer Ham
-ee1d :: [Int] -> [Int] -> Ham -> [(Int,Int,Double,Double)]
-ee1d l0s x0s stab = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ l0s x0s stab
+ee1d :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,Double,Double)]
+ee1d ls cutStabs l0s x0s = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ ls cutStabs l0s x0s
 
-ee1d_ :: [Int] -> [Int] -> Ham -> [(Int,Int,[Double])]
-ee1d_ l0s x0s stab = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
+ee1d_ :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,[Double])]
+ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE l0 x0 x | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
   where
-    n    = n'Ham stab
-    lx   =           head $ ls'Ham stab
-    lx_2 = lx // 2
-    lY   = product $ tail $ ls'Ham stab
+    n    = product ls
+    lx   = head $ ls
+    lY   = n // lx
+    modx x = mod x lx
+    modn i = mod i n
     -- entanglement entropy of the regions [x..x+l0-1],[x+x0..x+x0+l0-1]
     regionEE :: Int -> Int -> Int -> Double
     regionEE l0 x0 x = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
       where regionStabs = zipWith sigma [0..] [g'
-                          | g <- map ik'G $ Set.toList localStabs' ++ nonlocalStabs,
+                          | g <- map ik'G $ cutStabs [x,x+l0,x+x0,x+x0+l0],
                             let g' = (IntMap.union `on` selRegion g . (*lY)) x (modx$x+x0),
                             not (IntMap.null g') && ((/=) `on` IntMap.keys) g g']
-            localStabs' = cutStabs [x,x+l0,x+x0,x+x0+l0]
             -- intersect g with region [i..i+l-1]
             selRegion :: IntMap Int -> Int -> IntMap Int
             selRegion g i = (if i+l<n then                fst . IntMap.split        (i+l)
                                       else IntMap.union $ fst $ IntMap.split (modn $ i+l) g)
                           $ snd $ IntMap.split (i-1) g
             l = l0*lY
-    modx x = mod x lx
-    modn i = mod i n
     acommMat :: [Sigma] -> IntMap IntSet
     acommMat gs  = foldl' f IntMap.empty gs
-      where  gs' = (zero'Ham $ ls'Ham stab) +# map (,1::F) gs
+      where  gs' = (zero'Ham ls) +# map (,1::F) gs
              add iD1 iD2 = IntMap.insertWith IntSet.union iD1 $ IntSet.singleton iD2
              f mat0 g0 = foldl'_ (\iD -> add iD0 iD . add iD iD0) iDs mat0
                where iDs = map iD'G $ filter (\g -> iD'G g < iD0 && acommQ g g0) $ map fst $ acommCandidates g0 gs'
                      iD0 = iD'G g0
-    -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
-    cutStabs :: [Int] -> Set Sigma
-    cutStabs = Set.unions . map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) . nub . map (flip mod lx_2)
-    cutStabs0 :: IntMap (Set Sigma)
-    cutStabs0 = IntMap.fromListWith Set.union
-              $ concatMap (\g -> map (,Set.singleton g) $ cutRegions $ intUnion $ map (flip div lY) $ IntMap.keys $ ik'G g) localStabs
-      where cutRegions :: [Int] -> [Int]
-            cutRegions xs = concatMap region0 $ zipExact xs (rotateLeft 1 xs)
-            region0 (x,x') | dx <= lx_2 = map (flip mod lx_2) [x+1 .. x+dx]
-                           | otherwise  = region0 (x',x)
-              where dx = modx $ x' - x
-    -- local and nonlocal stabilizers
-    localStabs, nonlocalStabs :: [Sigma]
-    [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
 
--- stabilizers that may have been cut
+-- stabilizers that may have been cut by [x..x+lx/2-1]
 calcCutStabs :: Int -> Ham -> [[Int] -> [Sigma]]
 calcCutStabs d stab = map cutStabs [0..d-1]
   where
     ls = ls'Ham stab
     localStabs, nonlocalStabs :: [Sigma]
     [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
-    cutStabs d0 = \xs -> localStabs' xs ++ nonlocalStabs -- TODO check that the lambda actually works
+    cutStabs d0 = \xs -> localStabs' xs ++ nonlocalStabs
       where
         localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) $ nub $ map modx_2 xs
         lx    = ls !! d0
@@ -1199,6 +1183,7 @@ calcCutStabs d stab = map cutStabs [0..d-1]
         x_i i = (!!d0) $ xs_i ls i
         modx   x = mod x lx
         modx_2 x = mod x lx_2
+        -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
         cutStabs0 :: IntMap (Set Sigma)
         cutStabs0 = IntMap.fromListWith Set.union $ concatMap f localStabs
         f :: Sigma -> [(Int,Set Sigma)]
@@ -1577,9 +1562,11 @@ main = do
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
+  let cutStabs = calcCutStabs (length ls0) (stab'RG rg)
+  
   when calc_EEQ $ do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
-        entanglement_data = ee1d_ xs (small_lsQ || ternaryQ ? [0] $ 0:xs) $ stab'RG rg
+        entanglement_data = ee1d_ ls (head cutStabs) xs (small_lsQ || ternaryQ ? [0] $ 0:xs)
         entanglement_map = Map.fromListWith error_ $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
         lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
@@ -1589,7 +1576,7 @@ main = do
     print $ mapMeanError entanglement_data
     
 --  putStr "entanglement entropies: " -- [(region size, region separation, [entanglement entropies])]
---  print $ ee1d_ [1..last xs] [0] $ stab'RG rg
+--  print $ ee1d_ ls cutStabs [1..last xs] [0]
     
     putStr "long range mutual information: "
     print $ lrmi_data

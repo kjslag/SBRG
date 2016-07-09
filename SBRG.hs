@@ -148,7 +148,7 @@ foldl'_ = flip . foldl' . flip
 
 partitions :: Int -> [a] -> [[a]]
 partitions _ [] = []
-partitions n xs = uncurry (:) $ second (partitions n) $ splitAt n xs
+partitions n xs = uncurry (:) $ second (partitions n) $ splitAtExact n xs
 
 newtype NestedFold t1 t2 a = NestedFold { getNestedFold :: t1 (t2 a) }
 
@@ -1142,12 +1142,15 @@ mutual_information regions stab = sum (map ee $ drop1s regions) - (genericLength
         drop1s (x:xs) = xs : map (x:) (drop1s xs)
 
 -- entanglement entropy: arguments: list of region sizes and stabilizer Ham
-ee1d :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,Double,Double)]
+ee1d :: [Int] -> [[Int] -> [Sigma]] -> [Int] -> [Int] -> [(Int,Int,Double,Double)]
 ee1d ls cutStabs l0s x0s = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ ls cutStabs l0s x0s
 
-ee1d_ :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,[Double])]
-ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0,x+x0)] | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
-  where lx = head ls
+ee1d_ :: [Int] -> [[Int] -> [Sigma]] -> [Int] -> [Int] -> [(Int,Int,[Double])]
+ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs0 $ nub [(l0,x),(l0,x+x0)]
+                                      | x <- [0..head ls-1],
+                                        cutStabs0 <- cutStabs])
+                            | l0 <- l0s,
+                              x0 <- x0s]
 
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
 regionEE_1d :: [Int] -> ([Int] -> [Sigma]) -> [(Int,Int)] -> Double
@@ -1174,19 +1177,22 @@ regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionS
 
 -- stabilizers that may have been cut by [x..x+lx/2-1]
 calcCutStabs :: Int -> Ham -> [[Int] -> [Sigma]]
-calcCutStabs d stab = map cutStabs [0..d-1]
+calcCutStabs dim_ stab = map cutStabs [0..dim-1]
   where
-    ls = ls'Ham stab
-    localStabs, nonlocalStabs :: [Sigma]
-    [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
+    ls     = ls'Ham stab
+    lx     = head ls
+    lx_2   = lx // 2
+    modx   = flip mod lx
+    modx_2 = flip mod lx_2
+    dim = length $ takeWhile (==lx) $ take dim_ ls
     cutStabs d0 = \xs -> localStabs' xs ++ nonlocalStabs
       where
         localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) $ nub $ map modx_2 xs
-        lx    = ls !! d0
-        lx_2  = lx // 2
-        x_i i = (!!d0) $ xs_i ls i
-        modx   x = mod x lx
-        modx_2 x = mod x lx_2
+        x_i = head . xs_i ls
+        rotate_ xs = uncurry (++) $ first (rotateLeft d0) $ splitAtExact dim xs
+        localStabs, nonlocalStabs :: [Sigma]
+        [localStabs, nonlocalStabs] = [map (sigma 0 . IntMap.mapKeys (i_xs ls . rotate_ . xs_i ls) . ik'G)
+                                      $ toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
         -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
         cutStabs0 :: IntMap (Set Sigma)
         cutStabs0 = IntMap.fromListWith Set.union $ concatMap f localStabs
@@ -1571,7 +1577,7 @@ main = do
   
   when calc_EEQ $ do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
-        entanglement_data = ee1d_ ls (head cutStabs) xs_ (small_lsQ || ternaryQ ? [0] $ 0:xs_)
+        entanglement_data = ee1d_ ls cutStabs xs_ (small_lsQ || ternaryQ ? [0] $ 0:xs_)
         entanglement_map = Map.fromListWith error_ $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
         lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
@@ -1594,7 +1600,7 @@ main = do
     let mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]
         
         structure_factor :: (V v, Floating (v Double), MySeq (v Double))
-                         => Int -> ([Int] -> [Int] -> v Double) -> [(Int,Int,v Double,v Double)]
+                         => Int -> ([Int] -> [Int] -> [v Double]) -> [(Int,Int,v Double,v Double)]
         structure_factor d0 f =
             zipWithExact (\(m,q) (s,ds) -> (m,q,s,ds)) mqs
               $ map (both (fromIntegral n0'*^) . weightedMeanError' (*^)) $ transpose
@@ -1608,18 +1614,18 @@ main = do
                                  $ zip (         rands_xs seed_ ls0')
                                        (weighted_rands_xs seed_ ls0'),
                   let ys0   = zipWithExact (+) xs0 dxs
-                      f0    = f xs0 ys0
                       dxs'  = catMaybes $ zipWithExact justIf (map (==l0) ls0') dxs
-                      sin2_ = sum $ map sq $ zipWithExact ((\l x -> l/pi * sin (pi*x/l)) `on` fromIntegral) ls0' dxs ]
+                      sin2_ = sum $ map sq $ zipWithExact ((\l x -> l/pi * sin (pi*x/l)) `on` fromIntegral) ls0' dxs,
+                  f0 <- f xs0 ys0 ]
           where l0   = head ls0
                 ls0' = takeExact d0 ls0
                 n0'  = product ls0'
         
         offset d0 f = mean [f xs ys | xs <- sequenceA $ map (\l -> [0..l-1]) $ takeExact d0 ls0,
-                                      let ys = zipWith (+) (map (//2) ls0) xs ]
+                                      let ys = zipWith (+) (map (//2) ls0) xs  ]
         
         ising_f k = \xs ys -> let f0 = f xs ys
-                              in  V2 (f0, f0 - offset_)
+                              in  [V2 (f0, f0 - offset_)]
           where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust
                                 . uncurry acomm . both (sigma 0 . flip IntMap.singleton k . i_xs' ls)
                 offset_ = offset dim f
@@ -1630,25 +1636,26 @@ main = do
                            _     -> []
         
         mutual_information_nd_f = \xs ys -> let f0 = f xs ys
-                                            in  V2 (f0, f0 - offset_)
+                                            in  [V2 (f0, f0 - offset_)]
           where ee is = ee_local (IntSet.fromList $ concatMap unit_cell is) (stab'RG rg)
                 f_ i j      = i == j ? fromIntegral z $ ee [i] + ee [j] - ee [i,j]
                 f           = f_ `on` i_xs' ls
                 offset_     = offset dim f
                 unit_cell i = [i..i+z-1]
         
-        mutual_information_1d_f = \x y -> let f0 = f x y
-                                       in  V3 (f0, f0 - offset_, fc x y)
+        mutual_information_1d_f = \x y -> [ V3 (f0, f0 - offset_, fc cS x y)
+                                          | (cS,offset_) <- zipExact cutStabs offsets,
+                                            let f0 = f cS x y ]
           where lx = head ls
-                ee lxs    = regionEE_1d ls (head cutStabs) lxs
-                f x y     = cMI x y []
-                offset_   = offset 1 (f `on` the)
-                cMI x y k = x == y ? fromIntegral (n//head ls)
-                                   $ ee ((1,x):k) + ee ((1,y):k) - ee ((1,x):(1,y):k) - ee k
-                fc  x y   = cMI x y $ case flip divMod 2 $ maximumOn (modDist (2*lx) . (2*x-)) [x+y, x+y +lx] of
-                                           (x0,0) -> [(lx//4-1, x0+1-lx//8)]
-                                           (x0,1) -> [(lx//4  , x0+1-lx//8)]
-                                           _      -> error_
+                offsets = [offset 1 (f cS `on` the) | cS <- cutStabs]
+                f   cS x y   = cMI cS x y []
+                cMI cS x y k = x == y ? fromIntegral (n//lx)
+                                      $ ee ((1,x):k) + ee ((1,y):k) - ee ((1,x):(1,y):k) - ee k
+                  where ee lxs = regionEE_1d ls cS lxs
+                fc  cS x y = cMI cS x y $ case flip divMod 2 $ maximumOn (modDist (2*lx) . (2*x-)) [x+y, x+y +lx] of
+                                               (x0,0) -> [(lx//4-1, x0+1-lx//8)]
+                                               (x0,1) -> [(lx//4  , x0+1-lx//8)]
+                                               _      -> error_
     
     forM_ anderson_fs $ \(name,d0,f) -> do
       putStr $ "anderson " ++ name ++ " structure factor: " -- [(m, q, [ZZ(q)^m, ZZ - offset], error)]

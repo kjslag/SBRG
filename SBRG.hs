@@ -190,11 +190,11 @@ justIf False = const Nothing
 justIf' :: (a -> Bool) -> a -> Maybe a
 justIf' f x = justIf (f x) x
 
--- minimumOn :: Ord b => (a -> b) -> [a] -> a
--- minimumOn f xs = snd $ minimumBy (comparing fst) $ map (\x -> (f x, x)) xs
+minimumOn :: Ord b => (a -> b) -> [a] -> a
+minimumOn f xs = snd $ minimumBy (comparing fst) $ map (\x -> (f x, x)) xs
 
--- maximumOn :: Ord b => (a -> b) -> [a] -> a
--- maximumOn f xs = snd $ maximumBy (comparing fst) $ map (\x -> (f x, x)) xs
+maximumOn :: Ord b => (a -> b) -> [a] -> a
+maximumOn f xs = snd $ maximumBy (comparing fst) $ map (\x -> (f x, x)) xs
 
 intUnion :: [Int] -> [Int]
 intUnion = IntSet.toList . IntSet.fromList
@@ -285,11 +285,18 @@ modDist l x = abs $ mod (x+l//2) l - l//2
 
 -- Vector
 
-newtype V2 a = V2 (a,a  ) deriving (Functor, Foldable, Num, Fractional, Floating, MySeq)
-newtype V3 a = V3 (a,a,a) deriving (Functor, Foldable, Num, Fractional, Floating, MySeq)
+newtype V2 a = V2 (a,a  ) deriving (Functor, Foldable, Num, Fractional, Floating)
+newtype V3 a = V3 (a,a,a) deriving (Functor, Foldable, Num, Fractional, Floating)
+
+class (Functor v, Foldable v) => V v
+instance V V2
+instance V V3
 
 instance Show a => Show (V2 a) where  show = show . toList
 instance Show a => Show (V3 a) where  show = show . toList
+
+instance MySeq a => MySeq (V2 a) where  mySeq = mySeq'Foldable
+instance MySeq a => MySeq (V3 a) where  mySeq = mySeq'Foldable
 
 infixl 7 *^
 (*^) :: (Functor f, Num a) => a -> f a -> f a
@@ -600,7 +607,7 @@ sort'GT = sortWith (AbsF . snd)
 scale'GT :: F -> SigmaTerm -> SigmaTerm
 scale'GT x (g,c) = (g,x*c)
 
-length'G :: Int -> Sigma -> Int -- TODO d>1
+length'G :: Int -> Sigma -> Int
 length'G l = (l-) . maximum . modDifferences l . IntMap.keys . ik'G
 
 size'G :: Sigma -> Int
@@ -846,7 +853,6 @@ c4'Ham dir g4 ham = uncurry (+#) $ foldl' delSigma (ham,[]) $ map fst $ acommCan
                                        Nothing      -> (ham0,gTs)
                                        Just (g',c') -> second (\c -> (g',dir*c*c'):gTs) $ deleteLookup'Ham g ham0
 
--- TODO one could transpose (ie apply all c4 to one Sigma at a time instead of one c4 to all Sigma) this function by calculating the locality of the g4s
 c4s'Ham :: F -> [Sigma] -> Ham -> Ham
 c4s'Ham dir = foldl'_ $ c4'Ham dir
 
@@ -858,7 +864,7 @@ c4_wolff'Ham = c4_wolff_'Ham False
 --                      = H + ( h_3^2)^-1 icomm H (icomm H_0 Sigma)
 --                      = H +             icomm H _H0G
 -- note: # of terms cut by max_wolff_terms is affected by iD'G
--- onlyDiag note: only local sigmas are guaranteed to be diagonal -- TODO this doesn't seem to be true
+-- onlyDiag note: only local sigmas are guaranteed to be diagonal -- (maybe this isn't true anymore?)
 c4_wolff_'Ham :: Bool -> Maybe Int -> F -> G4_H0G -> Ham -> Ham
 c4_wolff_'Ham True     _               dir  _ _ | dir /= 1       = error_
 c4_wolff_'Ham _        _               dir (Left    g4     ) ham = c4'Ham dir g4 ham
@@ -869,14 +875,14 @@ c4_wolff_'Ham onlyDiag max_wolff_terms dir (Right (_H0G,i3)) ham = deleteSigmas'
               [catMaybes [scale'GT dir <$> icomm'GT gT gT'
                          | gT <- acommCandidates_sorted (fst gT') ham,
                            not onlyDiag || IntMap.findWithDefault 0 i3 (ik'G $ fst gT) /= 3 ]
-              | gT' <- _H0G] -- TODO check sort?
+              | gT' <- _H0G] -- check sort?
 
--- TODO onlyDiag makes no guarantees!
+-- onlyDiag makes no guarantees!
 c4s_wolff_'Ham :: Bool -> Maybe Int -> F -> [G4_H0G] -> Ham -> Ham
 c4s_wolff_'Ham onlyDiag max_wolff_terms dir g4_H0Gs ham_ =
     if' onlyDiag diagFilter id $ foldl'_ (c4_wolff_'Ham onlyDiag max_wolff_terms dir) g4_H0Gs ham_
   where diagFilter ham = ham -- foldl' (\ham' g -> all (==3) (ik'G g) ? ham' $ fst $ deleteLookup'Ham g ham') ham
-                       -- $ NestedFold $ nlcgs'Ham ham -- TODO profile this
+                       -- $ NestedFold $ nlcgs'Ham ham -- profile this?
 
 c4s_wolff'Ham :: Maybe Int -> F -> [G4_H0G] -> Ham -> Ham
 c4s_wolff'Ham = c4s_wolff_'Ham False
@@ -1052,9 +1058,9 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
 --     isDiag :: SigmaTerm -> Bool
 --     isDiag (g,_) = IntSet.null $ IntSet.intersection unusedIs' $ IntMap.keysSet $ ik'G g
     
-    isDiag :: SigmaTerm -> Bool -- TODO get rid of nUnused >= size_g below
+    isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = not $ True {-nUnused >= size_g-} ? (any (flip IntSet.member unusedIs') $ IntMap.keys $ ik'G g)
-                                           $ (any (flip IntMap.member $ ik'G g ) $ IntSet.toList unusedIs')
+                                                    $ (any (flip IntMap.member $ ik'G g ) $ IntSet.toList unusedIs')
       --where size_g  = size'G g
       --      nUnused = IntSet.size unusedIs'
     
@@ -1115,18 +1121,18 @@ ee_local is stab = (0.5*) $ fromIntegral $ symmeterize_rankZ2_old $ acommMat $
         ks          = IntMap.fromSet (const ()) is
         intersection' x y = IntMap.intersection x y
 
-ee1d_slow :: [Int] -> Ham -> [(Int,Double,Double)]
-ee1d_slow l0s = map (\(l0,_,ee,er) -> (l0,ee,er)) . ee1d_slow' l0s [0]
-
-ee1d_slow' :: [Int] -> [Int] -> Ham -> [(Int,Int,Double,Double)]
-ee1d_slow' l0s x0s stab =
-    [uncurry (l0,x0,,) $ meanError [ee_local (is l0 x `IntSet.union` is l0 (x+x0)) stab | x <- [0..lx-1]]
-    | l0 <- l0s, x0 <- x0s]
-  where n       = n'Ham stab
-        lx      =           head $ ls'Ham stab
-        lY      = product $ tail $ ls'Ham stab
-        modn i  = mod i n
-        is l0 x = IntSet.fromList $ map modn [x*lY..(x+l0)*lY-1]
+-- ee1d_slow :: [Int] -> Ham -> [(Int,Double,Double)]
+-- ee1d_slow l0s = map (\(l0,_,ee,er) -> (l0,ee,er)) . ee1d_slow' l0s [0]
+-- 
+-- ee1d_slow' :: [Int] -> [Int] -> Ham -> [(Int,Int,Double,Double)]
+-- ee1d_slow' l0s x0s stab =
+--     [uncurry (l0,x0,,) $ meanError [ee_local (is l0 x `IntSet.union` is l0 (x+x0)) stab | x <- [0..lx-1]]
+--     | l0 <- l0s, x0 <- x0s]
+--   where n       = n'Ham stab
+--         lx      =           head $ ls'Ham stab
+--         lY      = product $ tail $ ls'Ham stab
+--         modn i  = mod i n
+--         is l0 x = IntSet.fromList $ map modn [x*lY..(x+l0)*lY-1]
 
 -- mutual information (not the same as wiki Multivariate_mutual_information!)
 mutual_information :: [IntSet] -> Ham -> Double
@@ -1140,12 +1146,12 @@ ee1d :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,Double,Double
 ee1d ls cutStabs l0s x0s = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ ls cutStabs l0s x0s
 
 ee1d_ :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,[Double])]
-ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE ls cutStabs $ nub [(l0,x),(l0,x+x0)] | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
+ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0,x+x0)] | x <- [0..lx-1]]) | l0 <- l0s, x0 <- x0s]
   where lx = head ls
 
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
-regionEE :: [Int] -> ([Int] -> [Sigma]) -> [(Int,Int)] -> Double
-regionEE ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
+regionEE_1d :: [Int] -> ([Int] -> [Sigma]) -> [(Int,Int)] -> Double
+regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
   where n  = product ls
         lY = product $ tail ls
         lxs = map (second $ flip mod $ head ls) lxs_
@@ -1456,7 +1462,7 @@ main = do
                                trash'RG           = Nothing,
                                max_rg_terms'RG    = max_rg_terms,
                                max_wolff_terms'RG = max_wolff_terms }
-      xs       = ternaryQ  ? [head ls//2]
+      xs_      = ternaryQ  ? [head ls//2]
                $ (small_lsQ ? id $ filter isPow2) [1..head ls//2]
     --xs_small = [1..min (div (head ls0+1) 2) (2*head ln2_ls)]
   
@@ -1530,7 +1536,7 @@ main = do
         generic_histo :: [Int] -> (TinyG -> Int) -> [TinyGT] -> [(Int,Int,F,Double,F)]
         generic_histo ns f = map (\(n_,cs) -> (n_,length cs,rss cs, sum $ map (logF . abs) $ filter (/=0) cs, maximum $ map abs $ 0:cs)) . generic_histo_ ns . map (first f)
         
-        length_histo :: [Int] -> [TinyGT] -> [(Int,Int,F,Double,F)] -- TODO d>1
+        length_histo :: [Int] -> [TinyGT] -> [(Int,Int,F,Double,F)]
         length_histo ns = generic_histo ns (fromJust . length'TinyG)
         
         all_histos :: String -> ([Int],[Int]) -> [Int] -> [TinyGT] -> IO ()
@@ -1565,7 +1571,7 @@ main = do
   
   when calc_EEQ $ do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
-        entanglement_data = ee1d_ ls (head cutStabs) xs (small_lsQ || ternaryQ ? [0] $ 0:xs)
+        entanglement_data = ee1d_ ls (head cutStabs) xs_ (small_lsQ || ternaryQ ? [0] $ 0:xs_)
         entanglement_map = Map.fromListWith error_ $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
         lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
@@ -1575,95 +1581,94 @@ main = do
     print $ mapMeanError entanglement_data
     
 --  putStr "entanglement entropies: " -- [(region size, region separation, [entanglement entropies])]
---  print $ ee1d_ ls cutStabs [1..last xs] [0]
+--  print $ ee1d_ ls cutStabs [1..last xs_] [0]
     
     putStr "long range mutual information: "
     print $ lrmi_data
     
     when lrmiQ $ do
       putStrLn "LRMI: "
-      mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs]
+      mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs_]
   
   when calc_corrLenQ $ do
     let mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]
         
-        structure_factor :: (Functor v, Floating (v Double), MySeq (v Double))
+        structure_factor :: (V v, Floating (v Double), MySeq (v Double))
                          => Int -> ([Int] -> [Int] -> v Double) -> [(Int,Int,v Double,v Double)]
-        structure_factor d0 f = zipWithExact (\(m,q) (s,ds) -> (m,q,s,ds)) mqs
-                           $ map (both (fromIntegral n0*^) . weightedMeanError' (*^)) $ transpose
-                           $ [ [ (w, (sin2_^(m//2) * cos_) *^ f0)
-                               | (m,q) <- mqs,
-                                 let k0  = 2*pi/fromIntegral l0
-                                     cos_ = q==0 ? 1 $ mean $ map (\x -> cos $ k0 * fromIntegral (q*x)) dxs' ]
-                             | let seed_ = (seed',"structure_factor"),
-                               (xs_,(w,dxs)) <- --[([x],(1,[y])) | x <- [0..head ls-1], y <- [0..head ls-1]],
-                                                take (round $ (\n_ -> n_*log n_) (2*fromIntegral n0 :: Double))
-                                              $ zip (         rands_xs seed_ ls0')
-                                                    (weighted_rands_xs seed_ ls0'),
-                               let ys_   = zipWithExact (+) xs_ dxs
-                                   f0    = f xs_ ys_
-                                   dxs'  = catMaybes $ zipWithExact justIf (map (==l0) ls0') dxs
-                                   sin2_ = sum $ map sq $ zipWithExact ((\l x -> l/pi * sin (pi*x/l)) `on` fromIntegral) ls0' dxs ]
+        structure_factor d0 f =
+            zipWithExact (\(m,q) (s,ds) -> (m,q,s,ds)) mqs
+              $ map (both (fromIntegral n0'*^) . weightedMeanError' (*^)) $ transpose
+              $ [ [ (w, (sin2_^(m//2) * cos_) *^ f0)
+                  | (m,q) <- mqs,
+                    let k0  = 2*pi/fromIntegral l0
+                        cos_ = q==0 ? 1 $ mean $ map (\x -> cos $ k0 * fromIntegral (q*x)) dxs' ]
+                | let seed_ = (seed',"structure_factor"),
+                  (xs0,(w,dxs)) <- --[([x],(1,[y])) | x <- [0..head ls-1], y <- [0..head ls-1]],
+                                   take (round $ product $ map ((\l -> 2*l*log(2*l) :: Double) . fromIntegral) ls0')
+                                 $ zip (         rands_xs seed_ ls0')
+                                       (weighted_rands_xs seed_ ls0'),
+                  let ys0   = zipWithExact (+) xs0 dxs
+                      f0    = f xs0 ys0
+                      dxs'  = catMaybes $ zipWithExact justIf (map (==l0) ls0') dxs
+                      sin2_ = sum $ map sq $ zipWithExact ((\l x -> l/pi * sin (pi*x/l)) `on` fromIntegral) ls0' dxs ]
           where l0   = head ls0
-                ls0' = take d0 ls0
+                ls0' = takeExact d0 ls0
+                n0'  = product ls0'
         
-      --structure_factor_1d :: (Int -> Int -> v Double) -> [(Int,Int,v Double,v Double)]
-        structure_factor_1d f = structure_factor 1 (f `on` the)
+        offset d0 f = mean [f xs ys | xs <- sequenceA $ map (\l -> [0..l-1]) $ takeExact d0 ls0,
+                                      let ys = zipWith (+) (map (//2) ls0) xs ]
         
-      --structure_factor_nd :: (Int -> Int -> v Double) -> [(Int,Int,v Double,v Double)]
-        structure_factor_nd f = structure_factor dim (f `on` i_xs' ls)
-        
-        offset f = mean [f i j | i <- [0,z .. n],
-                                 let j = i_xs' ls $ zipWith (+) (map (//2) ls0) $ xs_i ls i ]
-        
-        ising_f k = \i j -> let f0 = (f `on` i_xs' ls) i j
-                            in  (f0, f0 - offset_)
-          where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust . uncurry acomm . both (sigma 0 . flip IntMap.singleton k)
-                offset_ = offset f
+        ising_f k = \xs ys -> let f0 = f xs ys
+                              in  V2 (f0, f0 - offset_)
+          where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust
+                                . uncurry acomm . both (sigma 0 . flip IntMap.singleton k . i_xs' ls)
+                offset_ = offset dim f
         
         anderson_fs = case model of
                            Ising -> [("ZZ", dim, ising_f 3)]
                            XYZ   -> [("XX", dim, ising_f 1), ("YY", dim, ising_f 2), ("ZZ", dim, ising_f 3)]
                            _     -> []
         
-        unit_cell i = [i..i+z-1]
+        mutual_information_nd_f = \xs ys -> let f0 = f xs ys
+                                            in  V2 (f0, f0 - offset_)
+          where ee is = ee_local (IntSet.fromList $ concatMap unit_cell is) (stab'RG rg)
+                f_ i j      = i == j ? fromIntegral z $ ee [i] + ee [j] - ee [i,j]
+                f           = f_ `on` i_xs' ls
+                offset_     = offset dim f
+                unit_cell i = [i..i+z-1]
         
-        mutual_information_0d_f = \i j -> let f0 = f i j
-                                          in  V2 (f0, f0 - offset_)
-          where ee is = ee_local (IntSet.fromList is) (stab'RG rg)
-                f i j = i == j ? 1 $ ((\i' j' -> ee i' + ee j' - ee (i'++j')) `on` unit_cell) i j
-                offset_   = offset f
-        
-        mutual_information_f = \i j -> let f0 = f i j
-                                       in  V3 (f0, f0 - offset_, fc i j)
-          where ee is     = ee_local (IntSet.fromList is) (stab'RG rg)
-                f i j     = cMI i j []
-                offset_   = offset f
-                cMI i j k = i == j ? 1 $ (\i' j' -> ee (i'++k) + ee (j'++k) - ee (i'++j'++k) - ee k) (unit_cell i) (unit_cell j) -- TODO make faster since k can be large
-                fc  i j   = cMI i j $ map (i_xs' ls) $ sequenceA $ (zipWith3 g ls0 `on` xs_i ls) i j
-                  where g l x y = (\k -> [k-l//8+1..k+l//8-boole (even $ x+y)]) $ snd $ head $ reverse $ sortWith fst
-                                $ map (\x' -> (reverse $ sort $ map (modDist l . (x'-)) [x,y], x'))
-                                $ (\x' -> [x',x'+l//2]) $ quot (x + y) 2
+        mutual_information_1d_f = \x y -> let f0 = f x y
+                                       in  V3 (f0, f0 - offset_, fc x y)
+          where lx = head ls
+                ee lxs    = regionEE_1d ls (head cutStabs) lxs
+                f x y     = cMI x y []
+                offset_   = offset 1 (f `on` the)
+                cMI x y k = x == y ? fromIntegral (n//head ls)
+                                   $ ee ((1,x):k) + ee ((1,y):k) - ee ((1,x):(1,y):k) - ee k
+                fc  x y   = cMI x y $ case flip divMod 2 $ maximumOn (modDist (2*lx) . (2*x-)) [x+y, x+y +lx] of
+                                           (x0,0) -> [(lx//4-1, x0+1-lx//8)]
+                                           (x0,1) -> [(lx//4  , x0+1-lx//8)]
+                                           _      -> error_
     
     forM_ anderson_fs $ \(name,d0,f) -> do
       putStr $ "anderson " ++ name ++ " structure factor: " -- [(m, q, [ZZ(q)^m, ZZ - offset], error)]
       print $ structure_factor d0 f
     
     putStr "mutual information structure factor: " -- [(m, q, [MI(q)^m, MI - offset, conditional MI], error)]
-    print $ structure_factor_1d mutual_information_f
+    print $ structure_factor 1 (mutual_information_1d_f `on` the)
     
     when (dim > 1) $ do
       putStr "mutual information 0d structure factor: " -- [(m, q, [MI(q)^m, MI - offset, conditional MI], error)]
-      print $ structure_factor_nd mutual_information_0d_f
+      print $ structure_factor dim mutual_information_nd_f
   
   let corr_z_xs_ggs = third3 (map $ both $ sigma 0 . IntMap.fromListWith error_) $ case model of
         ToricCode -> wilson_z_xs_ggs
         Z2Gauge   -> wilson_z_xs_ggs
         MajChain  -> let (a,b,c,d) = ([(0,3)], [(0,1),(1,1)], [(0,3),(1,3)], [(0,1),(2,1)])
-                     in  (1, xs, [(a,a), (b,b), (b,a), (c,c), (d,d), (d,c)])
-        _         -> (z, small_lsQ || ternaryQ ? xs $ sort $ union xs $ map (+(-1)) $ tail xs, xyz_gs)
+                     in  (1, xs_, [(a,a), (b,b), (b,a), (c,c), (d,d), (d,c)])
+        _         -> (z, small_lsQ || ternaryQ ? xs_ $ sort $ union xs_ $ map (+(-1)) $ tail xs_, xyz_gs)
       xyz_gs = copy [[(0,k)] | k <- [1..3]]
-      wilson_z_xs_ggs = (last ls0*z, xs,
+      wilson_z_xs_ggs = (last ls0*z, xs_,
                          copy [[(i_xs ls [0,y,mu],k) | y <- [0..last ls0-1]] | (mu,k) <- [(1,1),(2,3)]])
       copy   = map $ \x -> (x,x)
       aCorr  = uncurry3 anderson_corr  corr_z_xs_ggs $ stab'RG rg

@@ -1479,7 +1479,7 @@ main = do
   
   unless (0 < n) $ error_
   
-  putStr   "version:            "; putStrLn "160616.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "160709.0" -- year month day . minor
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
   putStr   "couplings:          "; print $ (read $ args!!3 :: [Double]) -- print couplings

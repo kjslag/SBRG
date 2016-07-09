@@ -710,7 +710,8 @@ toLists'MapGT :: MapGT -> [([(Int,Int)],F)]
 toLists'MapGT = map toList'GT . Map.toList
 
 fromList'MapGT :: [SigmaTerm] -> MapGT
-fromList'MapGT = Map.fromListWith (+)
+fromList'MapGT = fromListWith' (+)
+  where fromListWith' x y = Map.fromListWith x y
 
 instance MySeq MapGT
 
@@ -1169,30 +1170,32 @@ regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionS
                           $ snd $ IntMap.split (i-1) g
         acommMat :: [Sigma] -> IntMap IntSet
         acommMat gs  = foldl' f IntMap.empty gs
-          where  gs' = (zero'Ham ls) +# map (,1::F) gs
+          where  gs' = fromList'Ham ls $ map (,1::F) gs
                  add iD1 iD2 = IntMap.insertWith IntSet.union iD1 $ IntSet.singleton iD2
                  f mat0 g0 = foldl'_ (\iD -> add iD0 iD . add iD iD0) iDs mat0
                    where iDs = map iD'G $ filter (\g -> iD'G g < iD0 && acommQ g g0) $ map fst $ acommCandidates g0 gs'
                          iD0 = iD'G g0
 
+rotate_stab :: [Int] -> Int -> Sigma -> Sigma
+rotate_stab _  0  = id
+rotate_stab ls d0 = sigma 0 . IntMap.mapKeys (i_xs ls . rotate_ . xs_i ls) . ik'G
+  where rotate_ = uncurry (++) . first (rotateLeft d0) . splitAtExact (d0+1)
+
 -- stabilizers that may have been cut by [x..x+lx/2-1]
 calcCutStabs :: Int -> Ham -> [[Int] -> [Sigma]]
-calcCutStabs dim_ stab = map cutStabs [0..dim-1]
+calcCutStabs dim_ stab = map cutStabs $ takeWhile (\d0 -> ls!!d0 == lx) [0..dim_-1]
   where
     ls     = ls'Ham stab
     lx     = head ls
     lx_2   = lx // 2
     modx   = flip mod lx
     modx_2 = flip mod lx_2
-    dim = length $ takeWhile (==lx) $ take dim_ ls
     cutStabs d0 = \xs -> localStabs' xs ++ nonlocalStabs
       where
         localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) $ nub $ map modx_2 xs
         x_i = head . xs_i ls
-        rotate_ xs = uncurry (++) $ first (rotateLeft d0) $ splitAtExact dim xs
         localStabs, nonlocalStabs :: [Sigma]
-        [localStabs, nonlocalStabs] = [map (sigma 0 . IntMap.mapKeys (i_xs ls . rotate_ . xs_i ls) . ik'G)
-                                      $ toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
+        [localStabs, nonlocalStabs] = [rotate_stab ls d0 & map $ toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
         -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
         cutStabs0 :: IntMap (Set Sigma)
         cutStabs0 = IntMap.fromListWith Set.union $ concatMap f localStabs
@@ -1209,15 +1212,17 @@ randoms seed = map toF $ Random.randoms $ Random.mkStdGen seed
 
 weighted_rands_x :: Hashable a => a -> Int -> [(Double,Int)]
 weighted_rands_x seed l = map ((\x -> (c * sqrt (1+x*x), flip mod l $ round x)) . sinh)
-                         $ Random.randomRs (-lnL,lnL) $ Random.mkStdGen $ Hashable.hash ("weighted_rands_x", seed)
+                         $ randomRs' (-lnL,lnL) $ Random.mkStdGen $ Hashable.hash ("weighted_rands_x", seed)
   where lnL = asinh $ fromIntegral l / 2
         c   = lnL / (fromIntegral l / 2)
+        randomRs' x y = Random.randomRs x y
 
 weighted_rands_xs :: Hashable a => a -> [Int] -> [(Double,[Int])]
 weighted_rands_xs seed ls = map (\wxs -> (product $ map fst wxs, map snd wxs)) $ transpose [weighted_rands_x (seed,n::Int) l | (n,l) <- zip [1..] ls]
 
 rands_x :: Hashable a => a -> Int -> [Int]
-rands_x seed l = Random.randomRs (0,l-1) $ Random.mkStdGen $ Hashable.hash ("rands_x", seed)
+rands_x seed l = randomRs' (0,l-1) $ Random.mkStdGen $ Hashable.hash ("rands_x", seed)
+  where randomRs' x y = Random.randomRs x y
 
 rands_xs :: Hashable a => a -> [Int] -> [[Int]]
 rands_xs seed ls = transpose [rands_x (seed,n::Int) l | (n,l) <- zip [1..] ls]
@@ -1477,7 +1482,7 @@ main = do
   putStr   "version:            "; putStrLn "160616.0" -- year month day . minor
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
-  putStr   "couplings:          "; print couplings
+  putStr   "couplings:          "; print $ (read $ args!!3 :: [Double]) -- print couplings
   putStr   "Γ:                  "; print gamma
   putStr   "seed:               "; print seed
   putStr   "seed':              "; print seed'
@@ -1573,7 +1578,9 @@ main = do
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
-  let cutStabs = calcCutStabs dim (stab'RG rg)
+  let cutStabs      = calcCutStabs dim $ stab'RG rg
+      rotated_stabs = [ fromList'Ham ls $ map (first $ rotate_stab ls d0) $ Map.toList $ gc'Ham $ stab'RG rg
+                      | d0 <- takeWhile (\d0 -> ls!!d0 == head ls) [0..length ls0-1] ]
   
   when calc_EEQ $ do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
@@ -1581,7 +1588,7 @@ main = do
         entanglement_map = Map.fromListWith error_ $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
         lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
-                                       justIf (x>=l) (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
+                                       justIf (x>=l) (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft (x*length cutStabs) es0) es)
     
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ mapMeanError entanglement_data
@@ -1595,6 +1602,25 @@ main = do
     when lrmiQ $ do
       putStrLn "LRMI: "
       mapM_ print [(l0, mapMaybe (\(l,x,e,de) -> justIf (l==l0 && x>=head ls//4) (x,e,de)) lrmi_data) | l0 <- init $ init $ xs_]
+    
+    when (dim > 1 && not ternaryQ) $ do
+      let mapMeanError_0d = map (\(x0,ees) -> uncurry (x0,,) $ meanError ees)
+          entanglement_data_0d = [(x0, [ee_local (IntSet.fromList [i,i']) stab
+                                      | i <- [0,z..n-1],
+                                        let xs = xs_i ls i
+                                            i' = i_xs ls $ (head xs+x0):tail xs,
+                                        stab <- rotated_stabs])
+                                 | x0 <- 0:xs_]
+          lrmi_data_0d = mapMeanError_0d $ flip mapMaybe entanglement_data_0d $
+                          \(x,es) -> let (0,es0) = head entanglement_data_0d
+                                         nRot = x*length rotated_stabs*product (tail ls) in
+                                         justIf (x>=1) (x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft nRot es0) es)
+      
+      putStr "entanglement entropy 0d: " -- [(region separation, entanglement entropy, error)]
+      print $ mapMeanError_0d entanglement_data_0d
+      
+      putStr "long range mutual information 0d: "
+      print $ lrmi_data_0d
   
   when calc_corrLenQ $ do
     let mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]

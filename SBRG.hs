@@ -1622,9 +1622,12 @@ main = do
       putStr "long range mutual information 0d: "
       print $ lrmi_data_0d
   
+  let wilson_loops x = [ [(i_xs ls [x,y,mu],k) | y <- [0..last ls0-1]] | (mu,k) <- [(1,1),(2,3)] ]
+  
   when calc_corrLenQ $ do
     let mqs = [(0,0),(2,0),(4,0),(6,0),(0,1),(0,2)]
         
+        -- d0: # of dimensions to sum over
         structure_factor :: (V v, Floating (v Double), MySeq (v Double))
                          => Int -> ([Int] -> [Int] -> [v Double]) -> [(Int,Int,v Double,v Double)]
         structure_factor d0 f =
@@ -1650,16 +1653,22 @@ main = do
         offset d0 f = mean [f xs ys | xs <- sequenceA $ map (\l -> [0..l-1]) $ takeExact d0 ls0,
                                       let ys = zipWith (+) (map (//2) ls0) xs  ]
         
-        ising_f k = \xs ys -> let f0 = f xs ys
-                              in  [V2 (f0, f0 - offset_)]
-          where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust
-                                . uncurry acomm . both (sigma 0 . flip IntMap.singleton k . i_xs' ls)
-                offset_ = offset dim f
+        -- Int -> ([Int] -> Sigma) -> [Int] -> [Int] -> V
+        anderson_f d0 g_xs = \xs ys -> let f0 = f xs ys
+                                       in  [V2 (f0, f0 - offset_)]
+          where f       = curry $ uncurry (*) . bimap (rms'G $ stab'RG rg) toDouble . fromJust . uncurry acomm . both g_xs
+                offset_ = offset d0 f
+        
+        -- Int -> [Int] -> [Int] -> V
+        ising_f k = anderson_f dim $ sigma 0 . flip IntMap.singleton k . i_xs' ls
+        
+        toricCode_f k = anderson_f 1 $ sigma 0 . IntMap.fromListWith error_ . (!!k) . wilson_loops . the
         
         anderson_fs = case model of
-                           Ising -> [("ZZ", dim, ising_f 3)]
-                           XYZ   -> [("XX", dim, ising_f 1), ("YY", dim, ising_f 2), ("ZZ", dim, ising_f 3)]
-                           _     -> []
+                           Ising     -> [("ZZ", dim, ising_f 3)]
+                           XYZ       -> [("XX", dim, ising_f 1), ("YY", dim, ising_f 2), ("ZZ", dim, ising_f 3)]
+                           ToricCode -> [("Wilson", 1, toricCode_f 0), ("Hooft", 1, toricCode_f 1)]
+                           _         -> []
         
         mutual_information_nd_f = \xs ys -> let f0 = f xs ys
                                             in  [V2 (f0, f0 - offset_)]
@@ -1701,8 +1710,7 @@ main = do
                      in  (1, xs_, [(a,a), (b,b), (b,a), (c,c), (d,d), (d,c)])
         _         -> (z, small_lsQ || ternaryQ ? xs_ $ sort $ union xs_ $ map (+(-1)) $ tail xs_, xyz_gs)
       xyz_gs = copy [[(0,k)] | k <- [1..3]]
-      wilson_z_xs_ggs = (last ls0*z, xs_,
-                         copy [[(i_xs ls [0,y,mu],k) | y <- [0..last ls0-1]] | (mu,k) <- [(1,1),(2,3)]])
+      wilson_z_xs_ggs = (last ls0*z, xs_, copy $ wilson_loops 0)
       copy   = map $ \x -> (x,x)
       aCorr  = uncurry3 anderson_corr  corr_z_xs_ggs $ stab'RG rg
       aCorr' = uncurry3 anderson_corr' corr_z_xs_ggs           rg

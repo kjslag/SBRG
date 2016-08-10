@@ -1033,7 +1033,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
                                  | gLRs@((gL,_):_) <- init $ tails _G1,
                                    gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
                     -- extract diagonal terms
-    (diag'',_G3)    = partition isDiag $ h3'==0 ? [] $ Map.toList $ fromList'MapGT _G2 -- mergeUnionsBy (comparing fst) (\(g,c) (_,c') -> (g,c+c')) $ map pure _G2
+    (diag'',_G3)    = partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2 -- mergeUnionsBy (comparing fst) (\(g,c) (_,c') -> (g,c+c')) $ map pure _G2
                     -- keep only max_rg_terms terms
     (_G4, trash')   = cut_terms True max_rg_terms _G3
     
@@ -1425,6 +1425,9 @@ logF     = log'LF
 prettyPrint :: Bool
 prettyPrint = False
 
+fastSumQ :: Bool
+fastSumQ = True
+
 main :: IO ()
 main = do
   let small_lsQ               = False
@@ -1443,18 +1446,21 @@ main = do
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
     :: IO (Int, Model, [Int], [F], Double, Int, Int)
   
-  let alterSeedQ     = True
+  let proj_OTOC = True
+      
+      alterSeedQ     = not proj_OTOC
       ternaryQ       = False
-      calc_EEQ       = True
-      calc_aCorrQ    = model /= ToricCode
+      calc_EEQ       = not proj_OTOC
+      calc_aCorrQ    = not proj_OTOC
       calc_aCorr'Q   = False -- length ln2_ls <= 1
+      calc_OTOC      = proj_OTOC
       detailedQ      = False
       cut_powQ       = True
-      keep_diagQ     = length ln2_ls <= 1
-      full_diagQ     = False
+      keep_diagQ     = length ln2_ls <= 1 || calc_OTOC
+      full_diagQ     = calc_OTOC
       lrmiQ          = False
     --calc_momentsQ  = False
-      calc_corrLenQ  = True
+      calc_corrLenQ  = not proj_OTOC
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
       max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1479,7 +1485,8 @@ main = do
   
   unless (0 < n) $ error_
   
-  putStr   "version:            "; putStrLn "160709.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "160809.0" -- year month day . minor
+  putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
   putStr   "couplings:          "; print $ (read $ args!!3 :: [Double]) -- print couplings
@@ -1533,8 +1540,10 @@ main = do
     putStr "i3s: "
     print $ i3s'RG rg
     
-  --putStr "effective Hamiltonian: "
-  --print $ diag'RG rg
+    case diag'RG rg of
+      Diag'MapGT diag -> do putStr "effective Hamiltonian: "
+                            print $ diag
+      _ -> return ()
     
     putStr "holographic Hamiltonian: "
     print $ c4_ham0'RG rg
@@ -1607,7 +1616,7 @@ main = do
       let mapMeanError_0d = map (\(x0,ees) -> uncurry (x0,,) $ meanError ees)
           entanglement_data_0d = [(x0, [ee_local (IntSet.fromList [i,i']) stab
                                       | i <- [0,z..n-1],
-                                        let xs = xs_i ls i
+                                        let xs = xs_i ls i -- TODO add unit cell and larger regions
                                             i' = i_xs ls $ (head xs+x0):tail xs,
                                         stab <- rotated_stabs])
                                  | x0 <- 0:xs_]

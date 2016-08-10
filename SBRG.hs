@@ -923,12 +923,12 @@ empty'MapTinyGT = MapTinyGT Map.empty
 instance AddHash MapTinyGT (Sigma,F) where
   (MapTinyGT gc l) +# (g,c) = flip MapTinyGT l $ Map.alter (maybe (Just c) (+?c)) (to'TinyG l g) gc
 
-data Diag = NoDiag | Diag'MapGT !MapGT | Diag'MapTinyGT !MapTinyGT
+data Diag = NoDiag | Diag'Ham !Ham | Diag'MapTinyGT !MapTinyGT
   deriving (Show)
 
 instance AddHash Diag (Sigma,F) where
   NoDiag             +#  _ = NoDiag
-  (Diag'MapGT     m) +# gc = Diag'MapGT     $ m +# gc
+  (Diag'Ham       m) +# gc = Diag'Ham       $ m +# gc
   (Diag'MapTinyGT m) +# gc = Diag'MapTinyGT $ m +# gc
 
 -- RG
@@ -980,7 +980,7 @@ wolff_errors'RG = map (rss . map snd . fst) . rights . g4_H0Gs'RG
 
 init'RG :: Model -> [Int] -> Ham -> RG
 init'RG model ls0 ham = rg
-  where rg  = RG model ls0 ham ham ham (Diag'MapGT Map.empty) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
+  where rg  = RG model ls0 ham ham ham (Diag'Ham $ zero'Ham $ ls'Ham ham) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
@@ -1541,14 +1541,14 @@ main = do
     print $ i3s'RG rg
     
     case diag'RG rg of
-      Diag'MapGT diag -> do putStr "effective Hamiltonian: "
-                            print $ diag
+      Diag'Ham diag -> do putStr "effective Hamiltonian: "
+                          print $ diag
       _ -> return ()
     
     putStr "holographic Hamiltonian: "
     print $ c4_ham0'RG rg
   
-  unless ternaryQ $ do
+  unless (ternaryQ || proj_OTOC) $ do
     let log_ns      = reverse $ takeWhile (/=0) $ iterate (flip div 2) n
         small_ns n_ = n<=n_ ? [1..n] $ [1..n_]++[n]
         
@@ -1581,11 +1581,26 @@ main = do
     all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $
       case diag'RG rg of
            NoDiag           -> Nothing
-           Diag'MapGT     m -> Just $ toTinys m
+           Diag'Ham       m -> Just $ toTinys    $ gc'Ham m
            Diag'MapTinyGT m -> Just $ Map.toList $ gc'MapTinyGT m
 --  all_histos "c4 ham0"         (log_ns     , log_ns     ) log_ns         $ Map.toList  $  gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
+  
+  when (calc_OTOC && length ls == 1) $ do
+    putStr "OTOC: "
+    let diag  = c4s'Ham (-1) (g4s'RG rg) $ (\(Diag'Ham h) -> h) $ diag'RG rg
+        vw i k = sigma 0 $ IntMap.singleton i k
+    
+    print [(vk,wk,i,j, map snd diag'')
+          | vk <- [1,3],
+            i  <- [0],
+            let v = vw i vk
+                diag' = fromList'Ham ls $ acommSigmas v diag,
+            wk <- [vk..3],
+            j  <- [0..n-1],
+            let w = vw j wk
+                diag'' = acommSigmas w diag']
   
   let cutStabs      = calcCutStabs dim $ stab'RG rg
       rotated_stabs = [ fromList'Ham ls $ map (first $ rotate_stab ls d0) $ Map.toList $ gc'Ham $ stab'RG rg

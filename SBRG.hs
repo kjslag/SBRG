@@ -9,7 +9,7 @@
 {-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
 -- :set -XTupleSections
 
-{-# OPTIONS -Wall -Wno-unused-top-binds -fno-warn-unused-imports -Wno-orphans -O -optc-O2 -optc-march=native -optc-mfpmath=sse #-}
+{-# OPTIONS -Wall -Wno-unused-top-binds -fno-warn-unused-imports -Wno-orphans -O #-}
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
 -- +RTS -hy && hp2ps -c SBRG.hp && okular SBRG.ps
@@ -60,6 +60,9 @@ import qualified Data.IntMap.Strict as IntMap hiding (fromList, insert, delete, 
 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
+
+import Data.Vector (Vector)
+import qualified Data.Vector as Vector
 
 -- debug
 
@@ -243,7 +246,7 @@ isPow2 :: Int -> Bool
 isPow2 x = popCount x == 1
 
 mean :: Floating f => [f] -> f
-mean = (\(n,x) -> x/fromIntegral n) . sum . map (\x -> (1::Int,x))
+mean = (\(n,x) -> x/fromIntegral n) . sum . map (1::Int,)
 
 rms :: Floating f => [f] -> f
 rms = sqrt . mean . map sq
@@ -363,9 +366,10 @@ instance Show LogFloat where
       = if' s "" "-" ++ (abs y > recip epsilon
                         ? "10^" ++ shows (y/ln10) str
                         $ shows (exp $ ln10*y') ('e' : shows (e::Integer) str) )
-    | otherwise = showsPrec n (toDouble'LF z) str
-    where (e,y')  = properFraction $ y / ln10
-          ln10    = log 10
+    | otherwise = showsPrec' n (toDouble'LF z) str
+    where (e,y') = properFraction $ y / ln10
+          ln10   = log 10
+          showsPrec' a b = showsPrec a b
 
 instance Read LogFloat where
   readsPrec = map (first fromDouble'LF) .* readsPrec
@@ -1588,19 +1592,70 @@ main = do
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
   when (calc_OTOC && length ls == 1) $ do
-    putStr "OTOC: "
-    let diag  = c4s'Ham (-1) (g4s'RG rg) $ (\(Diag'Ham h) -> h) $ diag'RG rg
-        vw i k = sigma 0 $ IntMap.singleton i k
+    let ts = let n_=16 in map (exp . sinh . (/n_)) [-3*n_..7*n_]
+    putStr "OTOC ts: "
+    print ts
     
-    print [(vk,wk,i,j, map snd diag'')
-          | vk <- [1,3],
-            i  <- [0],
-            let v = vw i vk
-                diag' = fromList'Ham ls $ acommSigmas v diag,
-            wk <- [vk..3],
-            j  <- [0..n-1],
-            let w = vw j wk
-                diag'' = acommSigmas w diag']
+    let vs :: Map (Int,Int) Sigma -- (i,k) -> Sigma
+        vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
+           $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
+           $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
+        diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
+          where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
+        mean' :: [[Double]] -> [Double]
+        mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+          where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
+        otoc vk wk d = mean'
+          [ [prod t | t <- ts]
+          | i <- [0..n-1],
+            let diag' = diags Map.! (i,vk),
+            j <- nub $ map (flip mod n) [i-d,i+d],
+            let w = vs Map.! (j,wk)
+                diag'' = acommSigmas w diag'
+                eps = Vector.fromList $ map (toDouble'LF . abs . snd) diag''
+                prod t = Vector.foldl' (\p e -> p * cos' (t*e)) 1 eps ]
+          where cos' x = cos x
+--           where cos' x = 0.5 * (1 + recip (1 + x*x))
+        print' x = print x
+    putStr "OTOC: "
+    print' [ (vk,wk, map (otoc vk wk) [0..n//2])
+           | vk <- [1,3],
+             wk <- [vk..3] ]
+    
+--     let vs :: Map (Int,Int) Sigma -- (i,k) -> Sigma
+--         vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
+--            $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
+--            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
+--         diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
+--           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
+--         mean' :: [[Double]] -> [Double]
+--         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+--           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
+--         otoc vk wk d = mean'
+--           [ [product $ map (cos' . (*t)) eps | t <- ts]
+--           | i <- [0..n-1],
+--             let diag' = diags Map.! (i,vk),
+--             j <- nub $ map (flip mod n) [i-d,i+d],
+--             let w = vs Map.! (j,wk)
+--                 diag'' = acommSigmas w diag'
+--                 eps    = map (toDouble'LF . abs . snd) diag'' ]
+--           where cos' x = cos x
+--     putStr "OTOC: "
+--     print [ (vk,wk, map (otoc vk wk) [0..n//2])
+--           | vk <- [1,3],
+--             wk <- [vk..3] ]
+    
+--     let diag  = c4s'Ham (-1) (g4s'RG rg) $ (\(Diag'Ham h) -> h) $ diag'RG rg
+--         vw i k = sigma 0 $ IntMap.singleton i k
+--     print [(vk,wk,i,j, sort $ map (abs . snd) diag'')
+--           | vk <- [1,3],
+--             i  <- [0],
+--             let v = vw i vk
+--                 diag' = fromList'Ham ls $ acommSigmas v diag,
+--             wk <- [vk..3],
+--             j  <- [0..n-1],
+--             let w = vw j wk
+--                 diag'' = acommSigmas w diag']
   
   let cutStabs      = calcCutStabs dim $ stab'RG rg
       rotated_stabs = [ fromList'Ham ls $ map (first $ rotate_stab ls d0) $ Map.toList $ gc'Ham $ stab'RG rg

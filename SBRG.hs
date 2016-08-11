@@ -61,8 +61,8 @@ import qualified Data.IntMap.Strict as IntMap hiding (fromList, insert, delete, 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
 
-import Data.Vector.Unboxed (Vector)
-import qualified Data.Vector.Unboxed as Vector
+-- import Data.Vector.Unboxed (Vector)
+-- import qualified Data.Vector.Unboxed as Vector
 
 -- debug
 
@@ -1617,7 +1617,9 @@ main = do
         vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
            $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
-        diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
+        diags :: Map (Int,Int) MapAbsSigmas
+        diags = flip Map.map vs $ \v -> Map.mapMaybe (justIf' (not . Set.null) . Set.filter (acommQ v))
+                                      $ foldl' (+#) Map.empty $ acommCandidates_ v diag
           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
         mean' :: [[F]] -> [F]
         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
@@ -1628,14 +1630,22 @@ main = do
         otoc vk wk d = map recip $ mean'
           [ [prod t | t <- ts]
           | i <- [0..n-1],
-            let diag' = diags Map.! (i,vk),
+            let diag_v = diags Map.! (i,vk),
             j <- nub $ map (flip mod n) [i-d,i+d],
-            let w = vs Map.! (j,wk)
-                diag'' = acommSigmas_sorted w diag'
-                negEps = map (negate . abs . snd) diag''
-                negEpsSet = Set.fromDistinctAscList -- TODO check
-                          $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEEF c')) ([],2*head negEps) negEps
-                prod t = powF 2 $ fromIntegral $ Set.size $ fst $ Set.split (negate $ recip t) negEpsSet ]
+            let diag_w = diags Map.! (j,wk)
+                diag'' = intersectionWith'Map intersection'Set diag_v diag_w
+                eps    = concatMap (\(AbsF c, gs) -> replicate (Set.size gs) (abs c)) $ Map.toDescList diag''
+                epsSet = Set.fromDistinctAscList
+                       $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEEF c')) ([],-1) eps
+                prod t = powF 2 $ fromIntegral $ Set.size $ snd $ Set.split (recip t) epsSet
+                intersectionWith'Map x y = Map.intersectionWith x y
+                intersection'Set x y = Set.intersection x y ]
+--                 w = vs Map.! (j,wk)
+--                 diag'' = acommSigmas_sorted w diag'
+--                 negEps = map (negate . abs . snd) diag''
+--                 negEpsSet = Set.fromDistinctAscList -- TODO check
+--                           $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEEF c')) ([],2*head negEps) negEps
+--                 prod t = powF 2 $ fromIntegral $ Set.size $ fst $ Set.split (negate $ recip t) negEpsSet ]
         print' x = print x
     putStr "OTOC: "
     print' [ (vk,wk, map (otoc vk wk) [0..n//2])

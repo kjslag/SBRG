@@ -61,8 +61,8 @@ import qualified Data.IntMap.Strict as IntMap hiding (fromList, insert, delete, 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
 
-import Data.Vector (Vector)
-import qualified Data.Vector as Vector
+import Data.Vector.Unboxed (Vector)
+import qualified Data.Vector.Unboxed as Vector
 
 -- debug
 
@@ -1546,7 +1546,7 @@ main = do
     
     case diag'RG rg of
       Diag'Ham diag -> do putStr "effective Hamiltonian: "
-                          print $ diag
+                          print $ gc'Ham $ diag
       _ -> return ()
     
     putStr "holographic Hamiltonian: "
@@ -1602,14 +1602,17 @@ main = do
            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
         diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
-        mean' :: [[Double]] -> [Double]
-        mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
-          where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
+--         mean' :: [[Double]] -> [Double]
+--         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+--           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
+        mean' :: [Vector Double] -> Vector Double
+        mean' = (\(n_,sum_) -> Vector.map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+          where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, Vector.zipWith (+) xs1 xs2)
         otoc vk wk d = mean'
-          [ [prod t | t <- ts]
-          | i <- [0..n-1],
+          [ Vector.fromList [prod t | t <- ts]
+          | i <- [0{-,8..n-1-}], -- TODO
             let diag' = diags Map.! (i,vk),
-            j <- nub $ map (flip mod n) [i-d,i+d],
+            j <- nub $ map (flip mod n) [i-d{-,i+d-}],
             let w = vs Map.! (j,wk)
                 diag'' = acommSigmas w diag'
                 eps = Vector.fromList $ map (toDouble'LF . abs . snd) diag''
@@ -1621,29 +1624,6 @@ main = do
     print' [ (vk,wk, map (otoc vk wk) [0..n//2])
            | vk <- [1,3],
              wk <- [vk..3] ]
-    
---     let vs :: Map (Int,Int) Sigma -- (i,k) -> Sigma
---         vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
---            $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
---            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
---         diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
---           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
---         mean' :: [[Double]] -> [Double]
---         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
---           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
---         otoc vk wk d = mean'
---           [ [product $ map (cos' . (*t)) eps | t <- ts]
---           | i <- [0..n-1],
---             let diag' = diags Map.! (i,vk),
---             j <- nub $ map (flip mod n) [i-d,i+d],
---             let w = vs Map.! (j,wk)
---                 diag'' = acommSigmas w diag'
---                 eps    = map (toDouble'LF . abs . snd) diag'' ]
---           where cos' x = cos x
---     putStr "OTOC: "
---     print [ (vk,wk, map (otoc vk wk) [0..n//2])
---           | vk <- [1,3],
---             wk <- [vk..3] ]
     
 --     let diag  = c4s'Ham (-1) (g4s'RG rg) $ (\(Diag'Ham h) -> h) $ diag'RG rg
 --         vw i k = sigma 0 $ IntMap.singleton i k

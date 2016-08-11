@@ -34,7 +34,7 @@ import Data.NumInstances.Tuple
 import Data.Ord
 import Data.Tuple
 import Debug.Trace
-import Numeric.IEEE (nan,infinity)
+import Numeric.IEEE (nan, infinity, succIEEE, predIEEE)
 import Safe
 import Safe.Exact
 import System.Environment
@@ -351,13 +351,20 @@ pow'LF :: LogFloat -> Double -> LogFloat
 pow'LF (LogFloat s y) x = LogFloat s $ y*x
 -- pow'LF _ _ = error_
 
+exp'LF :: Double -> LogFloat
+exp'LF x = LogFloat True x
+
 log'LF :: LogFloat -> Double
 log'LF (LogFloat True y) = y
 log'LF _                 = error_
 
 isNaN'LF :: LogFloat -> Bool
 isNaN'LF (LogFloat _ y) = isNaN y
-  
+
+succIEEE'LF :: LogFloat -> LogFloat
+succIEEE'LF (LogFloat False y) = LogFloat False $ predIEEE y
+succIEEE'LF (LogFloat True  y) = LogFloat True  $ succIEEE y
+
 instance MySeq LogFloat
 
 instance Show LogFloat where
@@ -824,8 +831,12 @@ deleteSigmas'Ham = foldl'_ delete'Ham
 acommSigmas :: Sigma -> Ham -> [SigmaTerm]
 acommSigmas g = filter (acommQ g . fst) . acommCandidates g
 
+acommSigmas_sorted :: Sigma -> Ham -> [SigmaTerm]
+acommSigmas_sorted g = filter (acommQ g . fst) . acommCandidates_sorted g
+
 acommCandidates :: Sigma -> Ham -> [SigmaTerm]
 acommCandidates = (\(nlgs:lgs) -> toList'MAS nlgs ++ toSortedList'MASs lgs) .* acommCandidates_
+  -- toSortedList'MASs is needs so that we take unions of g
 
 acommCandidates_sorted :: Sigma -> Ham -> [SigmaTerm]
 acommCandidates_sorted = toSortedList'MASs .* acommCandidates_
@@ -1404,25 +1415,31 @@ calc_majHisto = map (\xs -> (fst $ head xs, map snd xs)) . groupWith fst . map (
 
 -- float type
 
-type_F   :: String
-toF      :: Double -> F
-toDouble :: F -> Double
-powF     :: F -> Double -> F -- preserves sign of base
-logF     :: F -> Double
+type_F    :: String
+toF       :: Double -> F
+toDouble  :: F -> Double
+powF      :: F -> Double -> F -- preserves sign of base
+expF      :: Double -> F
+logF      :: F -> Double
+succIEEEF :: F -> F
 
--- type F   = Double
--- type_F   = "Double"
--- toF      = id
--- toDouble = id
--- powF     = \x y -> signum x * (abs x ** y)
--- logF     = log
+-- type F    = Double
+-- type_F    = "Double"
+-- toF       = id
+-- toDouble  = id
+-- powF      = \x y -> signum x * (abs x ** y)
+-- expF      = exp
+-- logF      = log
+-- succIEEEF = succIEEE
 
-type F   = LogFloat
-type_F   = "LogFloat"
-toF      = fromDouble'LF
-toDouble = toDouble'LF
-powF     = pow'LF
-logF     = log'LF
+type F    = LogFloat
+type_F    = "LogFloat"
+toF       = fromDouble'LF
+toDouble  = toDouble'LF
+powF      = pow'LF
+expF      = exp'LF
+logF      = log'LF
+succIEEEF = succIEEE'LF
 
 -- main
 
@@ -1592,7 +1609,7 @@ main = do
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
   when (calc_OTOC && length ls == 1) $ do
-    let ts = let n_=16 in map (exp . sinh . (/n_)) [-3*n_..7*n_]
+    let ts = let n_=16 in map (expF . sinh . (/n_)) [-3*n_..7*n_]
     putStr "OTOC ts: "
     print ts
     
@@ -1602,28 +1619,57 @@ main = do
            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
         diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
---         mean' :: [[Double]] -> [Double]
---         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
---           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
-        mean' :: [Vector Double] -> Vector Double
-        mean' = (\(n_,sum_) -> Vector.map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
-          where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, Vector.zipWith (+) xs1 xs2)
-        otoc vk wk d = mean'
-          [ Vector.fromList [prod t | t <- ts]
-          | i <- [0{-,8..n-1-}], -- TODO
+        mean' :: [[F]] -> [F]
+        mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+          where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
+--         mean' :: [Vector F] -> Vector F
+--         mean' = (\(n_,sum_) -> Vector.map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+--           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, Vector.zipWith (+) xs1 xs2)
+        otoc vk wk d = map recip $ mean'
+          [ [prod t | t <- ts]
+          | i <- [0..n-1],
             let diag' = diags Map.! (i,vk),
-            j <- nub $ map (flip mod n) [i-d{-,i+d-}],
+            j <- nub $ map (flip mod n) [i-d,i+d],
             let w = vs Map.! (j,wk)
-                diag'' = acommSigmas w diag'
-                eps = Vector.fromList $ map (toDouble'LF . abs . snd) diag''
-                prod t = Vector.foldl' (\p e -> p * cos' (t*e)) 1 eps ]
-          where cos' x = cos x
---           where cos' x = 0.5 * (1 + recip (1 + x*x))
+                diag'' = acommSigmas_sorted w diag'
+                negEps = map (negate . abs . snd) diag''
+                negEpsSet = Set.fromDistinctAscList -- TODO check
+                          $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEEF c')) ([],2*head negEps) negEps
+                prod t = powF 2 $ fromIntegral $ Set.size $ fst $ Set.split (negate $ recip t) negEpsSet ]
         print' x = print x
     putStr "OTOC: "
     print' [ (vk,wk, map (otoc vk wk) [0..n//2])
            | vk <- [1,3],
              wk <- [vk..3] ]
+    
+--     let vs :: Map (Int,Int) Sigma -- (i,k) -> Sigma
+--         vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
+--            $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
+--            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
+--         diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
+--           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
+-- --         mean' :: [[Double]] -> [Double]
+-- --         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+-- --           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
+--         mean' :: [Vector Double] -> Vector Double
+--         mean' = (\(n_,sum_) -> Vector.map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+--           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, Vector.zipWith (+) xs1 xs2)
+--         otoc vk wk d = mean'
+--           [ Vector.fromList [prod t | t <- ts]
+--           | i <- [0{-,8..n-1-}], -- TODO
+--             let diag' = diags Map.! (i,vk),
+--             j <- nub $ map (flip mod n) [i-d{-,i+d-}],
+--             let w = vs Map.! (j,wk)
+--                 diag'' = acommSigmas w diag'
+--                 eps = Vector.fromList $ map (toDouble'LF . abs . snd) diag''
+--                 prod t = Vector.foldl' (\p e -> p * cos' (t*e)) 1 eps ]
+--           where cos' x = cos x
+-- --           where cos' x = 0.5 * (1 + recip (1 + x*x))
+--         print' x = print x
+--     putStr "OTOC: "
+--     print' [ (vk,wk, map (otoc vk wk) [0..n//2])
+--            | vk <- [1,3],
+--              wk <- [vk..3] ]
     
 --     let diag  = c4s'Ham (-1) (g4s'RG rg) $ (\(Diag'Ham h) -> h) $ diag'RG rg
 --         vw i k = sigma 0 $ IntMap.singleton i k

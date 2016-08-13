@@ -9,7 +9,7 @@
 {-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
 -- :set -XTupleSections
 
-{-# OPTIONS -Wall -Wno-unused-top-binds -fno-warn-unused-imports -Wno-orphans -O #-}
+{-# OPTIONS -Wall -Wno-unused-top-binds -fno-warn-unused-imports -Wno-orphans -O #-} -- -fllvm -fexcess-precision -optc-ffast-math -optc-O3
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
 -- +RTS -hy && hp2ps -c SBRG.hp && okular SBRG.ps
@@ -406,7 +406,7 @@ instance Num LogFloat where
     | isNaN y1            = z1
     | isNaN y2 || s1==s2  = z2
     | y1 < 0              = s1 ? z1 $ z2
-    | otherwise           = LogFloat True nan
+    | otherwise           = error (show ("nan",s1,y1,s2,y2)) $ LogFloat True nan
       where dy = y1 - y2
   (LogFloat s1 y1) * (LogFloat s2 y2) = LogFloat (not $ xor s1 s2) (y1 + y2)
   abs (LogFloat _ y) = LogFloat True y
@@ -431,7 +431,7 @@ instance Fractional LogFloat where
 instance Floating LogFloat where
   sqrt (LogFloat True y) = LogFloat True (y/2)
   sqrt _                 = error_
-  pi    = error_
+  pi    = fromDouble'LF pi
   exp   = error_
   log   = error_
   sin   = error_
@@ -541,7 +541,9 @@ newtype AbsF = AbsF {absF :: F}
 instance MySeq AbsF
 
 instance Ord AbsF where
-  AbsF x `compare` AbsF y = compare (abs y) (abs x)
+  AbsF x `compare` AbsF y = case compare (abs y) (abs x) of
+                                 EQ -> compare y x
+                                 o  -> o
 
 -- Sigma
 
@@ -1469,7 +1471,7 @@ main = do
   
   let proj_OTOC = True
       
-      alterSeedQ     = not proj_OTOC
+      alterSeedQ     = True
       ternaryQ       = False
       calc_EEQ       = not proj_OTOC
       calc_aCorrQ    = not proj_OTOC
@@ -1492,7 +1494,7 @@ main = do
       n        = n'RG rg0
       l_1d     = dim == 1 ? Just n $ Nothing
       z        = n // n0
-      seed'    = not alterSeedQ ? seed $ Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
+      seed'    = not alterSeedQ ? Hashable.hash seed $ Hashable.hash $ show (seed, model, ln2_ls, couplings, gamma)
       rg0      = init'RG model ls0 $ init_generic'Ham seed' $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = ternaryQ || not keep_diagQ ? NoDiag
                                                                                $ full_diagQ ? diag'RG rg0
@@ -1609,7 +1611,7 @@ main = do
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
   when (calc_OTOC && length ls == 1) $ do
-    let ts = let n_=16 in map (expF . sinh . (/n_)) [-3*n_..7*n_]
+    let ts = let n_=16 in map (exp . sinh . (/n_)) [-3*n_..7*n_]
     putStr "OTOC ts: "
     print ts
     
@@ -1617,16 +1619,14 @@ main = do
         vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
            $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
-        diags :: Map (Int,Int) MapAbsSigmas
-        diags = flip Map.map vs $ \v -> Map.mapMaybe (justIf' (not . Set.null) . Set.filter (acommQ v))
+        diags :: Map (Int,Int) (Map Double (Set Sigma))
+        diags = flip Map.map vs $ \v -> Map.mapKeysWith Set.union (toDouble . abs . absF)
+                                      $ Map.mapMaybe (justIf' (not . Set.null) . Set.filter (acommQ v))
                                       $ foldl' (+#) Map.empty $ acommCandidates_ v diag
           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
-        mean' :: [[F]] -> [F]
+        mean' :: [[LogFloat]] -> [LogFloat]
         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
---         mean' :: [Vector F] -> Vector F
---         mean' = (\(n_,sum_) -> Vector.map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
---           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, Vector.zipWith (+) xs1 xs2)
         otoc vk wk d = map recip $ mean'
           [ [prod t | t <- ts]
           | i <- [0..n-1],
@@ -1634,18 +1634,29 @@ main = do
             j <- nub $ map (flip mod n) [i-d,i+d],
             let diag_w = diags Map.! (j,wk)
                 diag'' = intersectionWith'Map intersection'Set diag_v diag_w
-                eps    = concatMap (\(AbsF c, gs) -> replicate (Set.size gs) (abs c)) $ Map.toDescList diag''
+                eps    = concatMap (\(c, gs) -> replicate (Set.size gs) c) $ Map.toAscList diag''
                 epsSet = Set.fromDistinctAscList
-                       $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEEF c')) ([],-1) eps
-                prod t = powF 2 $ fromIntegral $ Set.size $ snd $ Set.split (recip t) epsSet
+                       $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEE c')) ([],-1) eps
+--                 prod t = pMid $ pure $ snd $ Set.split (minEpsT/t) epsSet
+                prod t = pMidLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet
+                  where minEpsT  = 1/8    -- smaller t * epsilon are ignored
+                        maxEpsT  = pi*0.5 -- larger  t * epsilon are approximated by pHigh
+                        minLarge = 8      -- min # of cos(t*epsilon) to approximate
+                        pMidLarge (eMid,eLarge) = Set.size eLarge > minLarge
+                                                ? pMid [eMid, eLarge]
+                                                $ pMid [eMid] * pLarge eLarge
+                        pMid    = recip . fromDouble'LF . product . map (foldl'Set (\p e -> p * absCos' (t*e)) 1)
+                        absCos' x  = absCos x
+                        foldl'Set x y z_ = Set.foldl' x y z_
+                        absCos x = 4 * (1-frac) * frac
+                          where (_,frac) = properFraction $ x/pi + 0.5
+                        pLarge s = exp'LF $ _n*log 2 + (pi/(2*sqrt 3)) * sqrt _n * randGauss
+                          where _n        = fromIntegral $ Set.size s
+                                randGauss = (\(a:b:_) -> sqrt (-2*log a) * cos'' (2*pi*b))
+                                          $ Random.randoms $ Random.mkStdGen $ Hashable.hash (seed',vk,wk,i,j)
+                        cos'' x = cos x
                 intersectionWith'Map x y = Map.intersectionWith x y
                 intersection'Set x y = Set.intersection x y ]
---                 w = vs Map.! (j,wk)
---                 diag'' = acommSigmas_sorted w diag'
---                 negEps = map (negate . abs . snd) diag''
---                 negEpsSet = Set.fromDistinctAscList -- TODO check
---                           $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEEF c')) ([],2*head negEps) negEps
---                 prod t = powF 2 $ fromIntegral $ Set.size $ fst $ Set.split (negate $ recip t) negEpsSet ]
         print' x = print x
     putStr "OTOC: "
     print' [ (vk,wk, map (otoc vk wk) [0..n//2])

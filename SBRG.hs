@@ -1639,22 +1639,21 @@ main = do
                        $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEE c')) ([],-1) eps
 --                 prod t = pMid $ pure $ snd $ Set.split (minEpsT/t) epsSet
                 prod t = pMidLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet
-                  where minEpsT  = 1/8    -- smaller t * epsilon are ignored
-                        maxEpsT  = pi*0.5 -- larger  t * epsilon are approximated by pHigh
-                        minLarge = 8      -- min # of cos(t*epsilon) to approximate
+                  where minEpsT  = 1/32         -- smaller t * epsilon are ignored
+                        maxEpsT  = pi*(32 + 1/3) -- larger  t * epsilon are approximated by pHigh
+                        minLarge = 32           -- min # of cos(t*epsilon) to approximate
                         pMidLarge (eMid,eLarge) = Set.size eLarge > minLarge
-                                                ? pMid [eMid, eLarge]
-                                                $ pMid [eMid] * pLarge eLarge
-                        pMid    = recip . fromDouble'LF . product . map (foldl'Set (\p e -> p * absCos' (t*e)) 1)
-                        absCos' x  = absCos x
-                        foldl'Set x y z_ = Set.foldl' x y z_
-                        absCos x = 4 * (1-frac) * frac
-                          where (_,frac) = properFraction $ x/pi + 0.5
-                        pLarge s = exp'LF $ _n*log 2 + (pi/(2*sqrt 3)) * sqrt _n * randGauss
+                                                ? pMid eMid * pLarge eLarge
+                                                $ pMid absCos eMid * pMid (abs . cos) eLarge
+                        {-# INLINE pMid #-}
+                        pMid cos0 = recip . fromDouble'LF . product . map (Set.foldl' (\p e -> p * cos0 (t*e)) 1)
+                        {-# INLINE absCos #-}
+                        absCos x = (\x0 -> 0 < frac && frac < 1 ? x0 $ error $ show (frac,x,x0)) $ 4 * (1-frac) * frac
+                          where (_,frac) = properFraction $ x/pi + 0.5 :: (Int, Double)
+                        pLarge s = (+1) $ exp'LF $ _n*log 2 + (pi/(2*sqrt 3)) * sqrt _n * randGauss
                           where _n        = fromIntegral $ Set.size s
-                                randGauss = (\(a:b:_) -> sqrt (-2*log a) * cos'' (2*pi*b))
+                                randGauss = (\(a:b:_) -> sqrt (-2*log a) * cos (2*pi*b))
                                           $ Random.randoms $ Random.mkStdGen $ Hashable.hash (seed',vk,wk,i,j)
-                        cos'' x = cos x
                 intersectionWith'Map x y = Map.intersectionWith x y
                 intersection'Set x y = Set.intersection x y ]
         print' x = print x

@@ -1638,8 +1638,7 @@ main = do
                 diag'' = intersectionWith'Map intersection'Set diag_v diag_w
                 eps    = concatMap (\(c, gs) -> replicate (Set.size gs) c) $ Map.toAscList diag''
                 epsSet = Set.fromDistinctAscList $ scanl1 (\old new -> max new $ succIEEE old) eps
-                prod t = f $ uncurry (*) $ bimap pMid pLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet -- TODO
---                 prod t = f $ pMid epsSet
+                prod t = f $ uncurry (*) $ bimap pMid pLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet
                   where minEpsT  = 1/64          -- smaller t * epsilon are ignored
                         maxEpsT  = pi*(32 + 1/3) -- larger  t * epsilon are approximated by pHigh
                         {-# INLINE pMid #-}

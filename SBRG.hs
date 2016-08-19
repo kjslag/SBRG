@@ -1508,7 +1508,7 @@ main = do
   
   unless (0 < n) $ error_
   
-  putStr   "version:            "; putStrLn "160809.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "160813.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1624,10 +1624,12 @@ main = do
                                       $ Map.mapMaybe (justIf' (not . Set.null) . Set.filter (acommQ v))
                                       $ foldl' (+#) Map.empty $ acommCandidates_ v diag
           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
-        mean' :: [[LogFloat]] -> [LogFloat]
+        mean' :: [[(LogFloat,Double,LogFloat)]] -> [(LogFloat,Double,LogFloat)]
         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
-        otoc vk wk d = map recip $ mean'
+        f   x         = (x , log'LF x , recip x )
+        fi (x1,x2,x3) = (x1, exp'LF x2, recip x3)
+        otoc vk wk d = map fi $ mean'
           [ [prod t | t <- ts]
           | i <- [0..n-1],
             let diag_v = diags Map.! (i,vk),
@@ -1635,25 +1637,25 @@ main = do
             let diag_w = diags Map.! (j,wk)
                 diag'' = intersectionWith'Map intersection'Set diag_v diag_w
                 eps    = concatMap (\(c, gs) -> replicate (Set.size gs) c) $ Map.toAscList diag''
-                epsSet = Set.fromDistinctAscList
-                       $ fst $ foldr (\c (lst,next) -> let c' = max c next in (c':lst,succIEEE c')) ([],-1) eps
---                 prod t = pMid $ pure $ snd $ Set.split (minEpsT/t) epsSet
-                prod t = pMidLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet
-                  where minEpsT  = 1/32         -- smaller t * epsilon are ignored
+                epsSet = Set.fromList $ scanl1 (\old new -> max new $ succIEEE old) eps -- Set.fromDistinctAscList
+                prod t = f $ uncurry (*) $ bimap pMid pLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet -- TODO
+--                 prod t = f $ pMid epsSet
+                  where minEpsT  = 1/64          -- smaller t * epsilon are ignored
                         maxEpsT  = pi*(32 + 1/3) -- larger  t * epsilon are approximated by pHigh
-                        minLarge = 32           -- min # of cos(t*epsilon) to approximate
-                        pMidLarge (eMid,eLarge) = Set.size eLarge > minLarge
-                                                ? pMid eMid * pLarge eLarge
-                                                $ pMid absCos eMid * pMid (abs . cos) eLarge
                         {-# INLINE pMid #-}
-                        pMid cos0 = recip . fromDouble'LF . product . map (Set.foldl' (\p e -> p * cos0 (t*e)) 1)
+                        pMid s = product . map (fromDouble'LF . (\x -> assert (x /= 0) $ x)
+                                               . Set.foldl' (\p e -> p * absCos (t*e)) 1) . splitSet $ s
+                        splitSet s | Set.size s < 100 = [s]
+                                   | otherwise        = concatMap splitSet $ Set.splitRoot s
                         {-# INLINE absCos #-}
-                        absCos x = (\x0 -> 0 < frac && frac < 1 ? x0 $ error $ show (frac,x,x0)) $ 4 * (1-frac) * frac
+                        -- abs . cos
+                        absCos x = 4 * (1-frac) * frac
                           where (_,frac) = properFraction $ x/pi + 0.5 :: (Int, Double)
-                        pLarge s = (+1) $ exp'LF $ _n*log 2 + (pi/(2*sqrt 3)) * sqrt _n * randGauss
+                        pLarge s | Set.null s = 1
+                                 | otherwise  = (exp'LF $ negate $ abs $ (_n-1)*log 2 + (pi/(2*sqrt 3)) * sqrt (_n-1) * randGauss) * fromDouble'LF (cos $ (pi/2)*rc)
                           where _n        = fromIntegral $ Set.size s
-                                randGauss = (\(a:b:_) -> sqrt (-2*log a) * cos (2*pi*b))
-                                          $ Random.randoms $ Random.mkStdGen $ Hashable.hash (seed',vk,wk,i,j)
+                                randGauss = sqrt (-2*log ra) * cos (2*pi*rb)
+                                (ra:rb:rc:_) = Random.randoms $ Random.mkStdGen $ Hashable.hash (seed',vk,wk,i,j,t)
                 intersectionWith'Map x y = Map.intersectionWith x y
                 intersection'Set x y = Set.intersection x y ]
         print' x = print x

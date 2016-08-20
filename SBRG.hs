@@ -41,6 +41,9 @@ import System.Environment
 import System.CPUTime
 import System.Exit (exitSuccess, exitFailure)
 
+import qualified Control.Parallel as Parallel
+import qualified Control.Parallel.Strategies as Parallel
+
 import qualified System.Random as Random
 
 import Data.Strict (Pair(..))
@@ -59,7 +62,8 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
 
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
+import qualified Data.Map.Strict as  Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
+import qualified Data.Map.Lazy   as LMap hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey)
 
 -- import Data.Vector.Unboxed (Vector)
 -- import qualified Data.Vector.Unboxed as Vector
@@ -285,6 +289,15 @@ modDifferences l is = (head is + l - last is) : zipWith (-) (tail is) is
 
 modDist :: Int -> Int -> Int
 modDist l x = abs $ mod (x+l//2) l - l//2
+
+myParListChunk :: MySeq a => Int -> [a] -> [a]
+myParListChunk n | parallelQ = Parallel.withStrategy $ Parallel.parListChunk n $ Parallel.rseq . myForce
+                 | otherwise = id
+
+par, pseq :: a -> b -> b
+par  = parallelQ ? Parallel.par  $ flip const
+pseq = parallelQ ? Parallel.pseq $ flip const
+
 
 -- Vector
 
@@ -940,12 +953,12 @@ empty'MapTinyGT = MapTinyGT Map.empty
 instance AddHash MapTinyGT (Sigma,F) where
   (MapTinyGT gc l) +# (g,c) = flip MapTinyGT l $ Map.alter (maybe (Just c) (+?c)) (to'TinyG l g) gc
 
-data Diag = NoDiag | Diag'Ham !Ham | Diag'MapTinyGT !MapTinyGT
+data Diag = NoDiag | Diag'MapGT !MapGT | Diag'MapTinyGT !MapTinyGT
   deriving (Show)
 
 instance AddHash Diag (Sigma,F) where
   NoDiag             +#  _ = NoDiag
-  (Diag'Ham       m) +# gc = Diag'Ham       $ m +# gc
+  (Diag'MapGT     m) +# gc = Diag'MapGT     $ m +# gc
   (Diag'MapTinyGT m) +# gc = Diag'MapTinyGT $ m +# gc
 
 -- RG
@@ -997,7 +1010,7 @@ wolff_errors'RG = map (rss . map snd . fst) . rights . g4_H0Gs'RG
 
 init'RG :: Model -> [Int] -> Ham -> RG
 init'RG model ls0 ham = rg
-  where rg  = RG model ls0 ham ham ham (Diag'Ham $ zero'Ham $ ls'Ham ham) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
+  where rg  = RG model ls0 ham ham ham (Diag'MapGT Map.empty) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] [] (Just []) [] [] (stabilizers rg) (init_meta'RG rg) Nothing Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
@@ -1046,9 +1059,10 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
                     -- remove diagonal matrices from ham
     ham4             = flip deleteSigmas'Ham ham3 $ map fst diag'
                     -- distribute _G1
-    _G2              = catMaybes [ icomm'GT gL gR
-                                 | gLRs@((gL,_):_) <- init $ tails _G1,
-                                   gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
+    _G2              = catMaybes $ myParListChunk 16
+                       [ icomm'GT gL gR
+                       | gLRs@((gL,_):_) <- init $ tails _G1,
+                         gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
                     -- extract diagonal terms
     (diag'',_G3)    = partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2 -- mergeUnionsBy (comparing fst) (\(g,c) (_,c') -> (g,c+c')) $ map pure _G2
                     -- keep only max_rg_terms terms
@@ -1057,7 +1071,12 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     cut_terms :: Bool -> Maybe Int -> [SigmaTerm] -> ([SigmaTerm],[SigmaTerm])
     cut_terms sortQ = maybe (,[]) (\max_terms -> splitAt max_terms . if' sortQ sort'GT id)
     
-    rg' = rg {c4_ham0'RG        = c4_ham0',
+--     newHam  = ham4 +# _G4
+--     newDiag1 = diag     +# diag'
+--     newDiag2 = newDiag1 +# diag''
+    
+    rg' = -- `pseq` 
+          rg {c4_ham0'RG        = c4_ham0',
               ham'RG            = ham4 +# _G4,
               diag'RG           = diag +# [diag',diag''],
               unusedIs'RG       = unusedIs',
@@ -1451,6 +1470,9 @@ prettyPrint = False
 fastSumQ :: Bool
 fastSumQ = True
 
+parallelQ :: Bool
+parallelQ = False
+
 main :: IO ()
 main = do
   let small_lsQ               = False
@@ -1521,6 +1543,10 @@ main = do
     putStr "max Anderson terms: "; print max_wolff_terms
   putStr   "float type:         "; print type_F
   
+  let diag'Ham = case diag'RG rg of
+                      Diag'MapGT h -> Just $ zero'Ham (ls'RG rg) +# h
+                      _            -> Nothing
+  
   when detailedQ $ do
     putStr "Hamiltonian: "
     print $ ham0'RG rg0
@@ -1564,8 +1590,8 @@ main = do
     print $ i3s'RG rg
     
     case diag'RG rg of
-      Diag'Ham diag -> do putStr "effective Hamiltonian: "
-                          print $ gc'Ham $ diag
+      Diag'MapGT diag -> do putStr "effective Hamiltonian: "
+                            print $ diag
       _ -> return ()
     
     putStr "holographic Hamiltonian: "
@@ -1604,7 +1630,7 @@ main = do
     all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $
       case diag'RG rg of
            NoDiag           -> Nothing
-           Diag'Ham       m -> Just $ toTinys    $ gc'Ham m
+           Diag'MapGT     m -> Just $ toTinys m
            Diag'MapTinyGT m -> Just $ Map.toList $ gc'MapTinyGT m
 --  all_histos "c4 ham0"         (log_ns     , log_ns     ) log_ns         $ Map.toList  $  gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
@@ -1615,21 +1641,20 @@ main = do
     putStr "OTOC ts: "
     print ts
     
-    let vs :: Map (Int,Int) Sigma -- (i,k) -> Sigma
+    let vs :: Map (Int,Int) Sigma -- (i,k) -> sigma_i^k in the new basis
         vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
            $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
         diags :: Map (Int,Int) (Map Double (Set Sigma))
-        diags = flip Map.map vs $ \v -> Map.mapKeysWith Set.union (toDouble . abs . absF)
-                                      $ Map.mapMaybe (justIf' (not . Set.null) . Set.filter (acommQ v))
-                                      $ foldl' (+#) Map.empty $ acommCandidates_ v diag
-          where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
+        diags = flip LMap.map vs $ \v -> Map.mapKeysWith Set.union (toDouble . abs . absF)
+                                       $ Map.mapMaybe (justIf' (not . Set.null) . Set.filter (acommQ v))
+                                       $ foldl' (+#) Map.empty $ acommCandidates_ v $ fromJust diag'Ham
         mean' :: [[(LogFloat,Double,LogFloat)]] -> [(LogFloat,Double,LogFloat)]
         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
         f   x         = (x , log'LF x , recip x )
         fi (x1,x2,x3) = (x1, exp'LF x2, recip x3)
-        otoc vk wk d = map fi $ mean'
+        otoc vk wk d = map fi $ mean' $ myParListChunk 1
           [ [prod t | t <- ts]
           | i <- [0..n-1],
             let diag_v = diags Map.! (i,vk),

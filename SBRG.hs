@@ -38,8 +38,11 @@ import Numeric.IEEE (nan, infinity, succIEEE, predIEEE)
 import Safe
 import Safe.Exact
 import System.Environment
-import System.CPUTime
 import System.Exit (exitSuccess, exitFailure)
+
+import qualified System.CPUTime as CPUTime
+import qualified System.Clock as Clock
+import qualified GHC.Stats as GHC
 
 import qualified Control.Parallel as Parallel
 import qualified Control.Parallel.Strategies as Parallel
@@ -1059,7 +1062,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
                     -- remove diagonal matrices from ham
     ham4             = flip deleteSigmas'Ham ham3 $ map fst diag'
                     -- distribute _G1
-    _G2              = catMaybes $ myParListChunk 16
+    _G2              = catMaybes $ myParListChunk 64
                        [ icomm'GT gL gR
                        | gLRs@((gL,_):_) <- init $ tails _G1,
                          gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
@@ -1471,10 +1474,12 @@ fastSumQ :: Bool
 fastSumQ = True
 
 parallelQ :: Bool
-parallelQ = False
+parallelQ = True
 
 main :: IO ()
 main = do
+  startTime <- Clock.getTime Clock.Monotonic
+  
   let small_lsQ               = False
       max_rg_terms_default    = "32"
       max_wolff_terms_default = "4"
@@ -1687,47 +1692,6 @@ main = do
     print' [ (vk,wk, map (otoc vk wk) [0..n//2])
            | vk <- [1,3],
              wk <- [vk..3] ]
-    
---     let vs :: Map (Int,Int) Sigma -- (i,k) -> Sigma
---         vs = Map.fromListWith error_ $ map (\(g,_) -> (second (+1) (divMod (iD'G g-1) 3), set_iD'G 0 g))
---            $ Map.toList $ gc'Ham $ c4s'Ham (1) (reverse $ g4s'RG rg) $ fromList'Ham ls
---            $ [(,1) $ sigma (3*i+k) $ IntMap.singleton i k | i <- [0..n-1], k <- [1..3]]
---         diags = flip Map.map vs $ fromList'Ham ls . flip acommSigmas diag
---           where diag = (\(Diag'Ham h) -> h) $ diag'RG rg
--- --         mean' :: [[Double]] -> [Double]
--- --         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
--- --           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
---         mean' :: [Vector Double] -> Vector Double
---         mean' = (\(n_,sum_) -> Vector.map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
---           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, Vector.zipWith (+) xs1 xs2)
---         otoc vk wk d = mean'
---           [ Vector.fromList [prod t | t <- ts]
---           | i <- [0{-,8..n-1-}], -- TODO
---             let diag' = diags Map.! (i,vk),
---             j <- nub $ map (flip mod n) [i-d{-,i+d-}],
---             let w = vs Map.! (j,wk)
---                 diag'' = acommSigmas w diag'
---                 eps = Vector.fromList $ map (toDouble'LF . abs . snd) diag''
---                 prod t = Vector.foldl' (\p e -> p * cos' (t*e)) 1 eps ]
---           where cos' x = cos x
--- --           where cos' x = 0.5 * (1 + recip (1 + x*x))
---         print' x = print x
---     putStr "OTOC: "
---     print' [ (vk,wk, map (otoc vk wk) [0..n//2])
---            | vk <- [1,3],
---              wk <- [vk..3] ]
-    
---     let diag  = c4s'Ham (-1) (g4s'RG rg) $ (\(Diag'Ham h) -> h) $ diag'RG rg
---         vw i k = sigma 0 $ IntMap.singleton i k
---     print [(vk,wk,i,j, sort $ map (abs . snd) diag'')
---           | vk <- [1,3],
---             i  <- [0],
---             let v = vw i vk
---                 diag' = fromList'Ham ls $ acommSigmas v diag,
---             wk <- [vk..3],
---             j  <- [0..n-1],
---             let w = vw j wk
---                 diag'' = acommSigmas w diag']
   
   let cutStabs      = calcCutStabs dim $ stab'RG rg
       rotated_stabs = [ fromList'Ham ls $ map (first $ rotate_stab ls d0) $ Map.toList $ gc'Ham $ stab'RG rg
@@ -1881,8 +1845,18 @@ main = do
 --   print $ length $ show rg
   
   putStr "CPU time: "
-  cpu_time <- getCPUTime
-  print $ (1e-12::Double) * fromIntegral cpu_time
+  cpu_time <- CPUTime.getCPUTime
+  print $ (1e-12::Double) * fromInteger cpu_time
+  
+  putStr "WALL time: "
+  endTime <- Clock.getTime Clock.Monotonic
+  print $ (1e-9::Double) * (fromInteger $ on (-) Clock.toNanoSecs endTime startTime)
+  
+  gcStatsQ <- GHC.getGCStatsEnabled
+  when gcStatsQ $ do
+    putStr "RAM used (MB): "
+    gcStats <- GHC.getGCStats
+    print $ GHC.peakMegabytesAllocated gcStats
 
 
 -- old entanglement code

@@ -343,10 +343,13 @@ instance MySeq a => MySeq [a] where
   mySeq = mySeq'Foldable
 
 instance (MySeq a, MySeq b) => MySeq (a,b) where
-  mySeq (x,y) = mySeq x . mySeq y
+  mySeq (a,b) = mySeq a . mySeq b
 
 instance (MySeq a, MySeq b, MySeq c) => MySeq (a,b,c) where
-  mySeq (x,y,z) = mySeq x . mySeq y . mySeq z
+  mySeq (a,b,c) = mySeq a . mySeq b . mySeq c
+
+instance (MySeq a, MySeq b, MySeq c, MySeq d) => MySeq (a,b,c,d) where
+  mySeq (a,b,c,d) = mySeq a . mySeq b . mySeq c . mySeq d
 
 instance (MySeq a, MySeq b) => MySeq (Either a b) where
   mySeq = either mySeq mySeq
@@ -1535,7 +1538,7 @@ main = do
   
   unless (0 < n) $ error_
   
-  putStr   "version:            "; putStrLn "160813.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "160829.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1643,6 +1646,7 @@ main = do
   
   when (calc_OTOC && length ls == 1) $ do
     let ts = let n_=16 in map (exp . sinh . (/n_)) [-3*n_..7*n_]
+        es = let n_=16 in map (exp . sinh . (/n_)) [-7*n_..3*n_]
     putStr "OTOC ts: " -- note: these should be divided by 4
     print ts
     
@@ -1654,44 +1658,58 @@ main = do
         diags = flip LMap.map vs $ \v -> Map.mapKeysWith Set.union (toDouble . abs . absF)
                                        $ Map.mapMaybe (justIf' (not . Set.null) . Set.filter (acommQ v))
                                        $ foldl' (+#) Map.empty $ acommCandidates_ v $ fromJust diag'Ham
-        mean' :: [[(LogFloat,Double,LogFloat)]] -> [(LogFloat,Double,LogFloat)]
+        mean' :: [[(LogFloat,Double,LogFloat,LogFloat)]] -> [(LogFloat,Double,LogFloat,LogFloat)]
         mean' = (\(n_,sum_) -> map (/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
-        f   x         = (x , log'LF x , recip x )
-        fi (x1,x2,x3) = (x1, exp'LF x2, recip x3)
-        otoc vk wk d = map fi $ mean' $ myParListChunk 1
-          [ [prod t | t <- ts]
+        mean'' :: [[Int]] -> [Double]
+        mean'' = (\(n_,sum_) -> map (\x -> fromIntegral x/fromIntegral n_) sum_) . foldl1' add . map (1::Int,)
+          where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
+        f   x            = (abs x , log'LF $ abs x , recip $ abs x , x )
+        fi (x1,x2,x3,x4) = (x1    , exp'LF       x2, recip       x3, x4)
+        otoc vk wk d = (parallelQ ? id $ myForce) $ bimap (map fi . mean') mean'' $ unzip $ myParListChunk 1
+          [ (parallelQ ? id $ myForce) ([prod t | t <- ts], histo)
           | i <- [0..n-1],
             let diag_v = diags Map.! (i,vk),
             j <- nub $ map (flip mod n) [i-d,i+d],
             let diag_w = diags Map.! (j,wk)
                 diag'' = intersectionWith'Map intersection'Set diag_v diag_w
                 eps    = concatMap (\(c, gs) -> replicate (Set.size gs) c) $ Map.toAscList diag''
+                histo  = go eps es
+                  where go eps0 (e0:es0) = length eps_ : go eps' es0
+                          where (eps_,eps') = span (<e0) eps0
+                        go eps0  []      = [length eps0]
                 epsSet = Set.fromDistinctAscList $ scanl1 (\old new -> max new $ succIEEE old) eps
                 prod t = f $ uncurry (*) $ bimap pMid pLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet
                   where minEpsT  = 1/64          -- smaller t * epsilon are ignored
                         maxEpsT  = pi*(32 + 1/3) -- larger  t * epsilon are approximated by pHigh
                         {-# INLINE pMid #-}
-                        pMid s = product . map (fromDouble'LF . (\x -> assert (x /= 0) $ x)
-                                               . Set.foldl' (\p e -> p * absCos (t*e)) 1) . splitSet $ s
+                        pMid s = product . map (fromDouble'LF . (\x -> assert (x /= 0) x)
+                                               . Set.foldl' (\p e -> p * cos' (t*e)) 1) . splitSet $ s
                         splitSet s | Set.size s < 100 = [s]
                                    | otherwise        = concatMap splitSet $ Set.splitRoot s
-                        {-# INLINE absCos #-}
+                        {-# INLINE cos' #-}
                         -- abs . cos
-                        absCos x = 4 * (1-frac) * frac
-                          where (_,frac) = properFraction $ x/pi + 0.5 :: (Int, Double)
+                        cos' x = (even int ? 4 $ -4) * (1-frac) * frac
+                          where (int,frac) = properFraction $ x/pi + 0.5 :: (Int, Double)
                         pLarge s | Set.null s = 1
-                                 | otherwise  = (exp'LF $ negate $ abs $ (_n-1)*log 2 + (pi/(2*sqrt 3)) * sqrt (_n-1) * randGauss) * fromDouble'LF (cos $ (pi/2)*rc)
+                                 | otherwise  = (exp'LF $ negate $ abs $ (_n-1)*log 2 + (pi/(2*sqrt 3)) * sqrt (_n-1) * randGauss) * fromDouble'LF (cos $ pi*rc)
                           where _n        = fromIntegral $ Set.size s
                                 randGauss = sqrt (-2*log ra) * cos (2*pi*rb)
                                 (ra:rb:rc:_) = Random.randoms $ Random.mkStdGen $ Hashable.hash (seed',vk,wk,i,j,t)
                 intersectionWith'Map x y = Map.intersectionWith x y
                 intersection'Set x y = Set.intersection x y ]
         print' x = print x
+        otoc_data = [ (vk,wk, map (otoc vk wk) [0..n//2])
+                    | vk <- [1,3],
+                      wk <- [vk..3] ]
     putStr "OTOC: "
-    print' [ (vk,wk, map (otoc vk wk) [0..n//2])
-           | vk <- [1,3],
-             wk <- [vk..3] ]
+    print' $ map (third3 $ map fst) otoc_data
+    
+    putStr "OTOC es: "
+    print es
+    
+    putStr "OTOC energies: "
+    print' $ map (third3 $ map snd) otoc_data
   
   let cutStabs      = calcCutStabs dim $ stab'RG rg
       rotated_stabs = [ fromList'Ham ls $ map (first $ rotate_stab ls d0) $ Map.toList $ gc'Ham $ stab'RG rg

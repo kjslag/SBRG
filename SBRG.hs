@@ -9,7 +9,7 @@
 {-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
 -- :set -XTupleSections
 
-{-# OPTIONS -Wall -Wno-unused-top-binds -fno-warn-unused-imports -Wno-orphans -O #-} -- -fllvm -fexcess-precision -optc-ffast-math -optc-O3
+{-# OPTIONS_GHC -Wall -Wno-unused-top-binds -Wno-unused-imports -Wno-orphans -O #-} -- -fllvm -fexcess-precision -optc-ffast-math -optc-O3
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
 -- +RTS -hy && hp2ps -c SBRG.hp && okular SBRG.ps
@@ -1474,7 +1474,7 @@ fastSumQ :: Bool
 fastSumQ = True
 
 parallelQ :: Bool
-parallelQ = True
+parallelQ = False
 
 main :: IO ()
 main = do
@@ -1643,7 +1643,7 @@ main = do
   
   when (calc_OTOC && length ls == 1) $ do
     let ts = let n_=16 in map (exp . sinh . (/n_)) [-3*n_..7*n_]
-    putStr "OTOC ts: "
+    putStr "OTOC ts: " -- note: these should be divided by 4
     print ts
     
     let vs :: Map (Int,Int) Sigma -- (i,k) -> sigma_i^k in the new basis

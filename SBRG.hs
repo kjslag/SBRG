@@ -1666,18 +1666,18 @@ main = do
           where add (!n1,!xs1) (!n2,!xs2) = (n1+n2, myForce $ zipWithExact (+) xs1 xs2)
         f   x            = (abs x , log'LF $ abs x , recip $ abs x , x )
         fi (x1,x2,x3,x4) = (x1    , exp'LF       x2, recip       x3, x4)
+        es_histo :: [Double] -> [Double] -> [Int]
+        es_histo eps0 (e0:es0) = length eps_ : es_histo eps' es0
+          where (eps_,eps') = span (<e0) eps0
+        es_histo eps0  []      = [length eps0]
         otoc vk wk d = (parallelQ ? id $ myForce) $ bimap (map fi . mean') mean'' $ unzip $ myParListChunk 1
-          [ (parallelQ ? id $ myForce) ([prod t | t <- ts], histo)
+          [ (parallelQ ? id $ myForce) ([prod t | t <- ts], es_histo eps es)
           | i <- [0..n-1],
             let diag_v = diags Map.! (i,vk),
             j <- nub $ map (flip mod n) [i-d,i+d],
             let diag_w = diags Map.! (j,wk)
                 diag'' = intersectionWith'Map intersection'Set diag_v diag_w
                 eps    = concatMap (\(c, gs) -> replicate (Set.size gs) c) $ Map.toAscList diag''
-                histo  = go eps es
-                  where go eps0 (e0:es0) = length eps_ : go eps' es0
-                          where (eps_,eps') = span (<e0) eps0
-                        go eps0  []      = [length eps0]
                 epsSet = Set.fromDistinctAscList $ scanl1 (\old new -> max new $ succIEEE old) eps
                 prod t = f $ uncurry (*) $ bimap pMid pLarge $ Set.split (maxEpsT/t) $ snd $ Set.split (minEpsT/t) epsSet
                   where minEpsT  = 1/64          -- smaller t * epsilon are ignored
@@ -1708,8 +1708,14 @@ main = do
     putStr "OTOC es: "
     print es
     
-    putStr "OTOC energies: "
+    putStr "OTOC energies: " -- histos binned by "OTOC es"
     print' $ map (third3 $ map snd) otoc_data
+    
+    let diag_eps = concatMap (\(c, gs) -> replicate (Set.size gs) $ toDouble $ abs $ absF c)
+                 $ Map.toDescList $ let h = fromJust diag'Ham in lcgs'Ham h +# nlcgs'Ham h
+    
+    putStr "all OTOC energies: " -- histo binned by "OTOC es"
+    print' $ es_histo diag_eps es
   
   let cutStabs      = calcCutStabs dim $ stab'RG rg
       rotated_stabs = [ fromList'Ham ls $ map (first $ rotate_stab ls d0) $ Map.toList $ gc'Ham $ stab'RG rg

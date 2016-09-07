@@ -1538,7 +1538,7 @@ main = do
   
   unless (0 < n) $ error_
   
-  putStr   "version:            "; putStrLn "160829.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "160907.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1645,8 +1645,8 @@ main = do
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
   
   when (calc_OTOC && length ls == 1) $ do
-    let ts = let n_=16 in map (exp . sinh . (/n_)) [-3*n_..7*n_]
-        es = let n_=16 in map (exp . sinh . (/n_)) [-7*n_..3*n_]
+    let ts  = let n_=16 in map (exp . sinh . (/n_)) [-3*n_..7*n_]
+        es  = let n_=16 in map (exp . sinh . (/n_)) [-7*n_..3*n_]
     putStr "OTOC ts: " -- note: these should be divided by 4
     print ts
     
@@ -1670,7 +1670,7 @@ main = do
         es_histo eps0 (e0:es0) = length eps_ : es_histo eps' es0
           where (eps_,eps') = span (<e0) eps0
         es_histo eps0  []      = [length eps0]
-        otoc vk wk d = (parallelQ ? id $ myForce) $ bimap (map fi . mean') mean'' $ unzip $ myParListChunk 1
+        otoc vk wk d = (parallelQ ? id $ myForce) $ bimap (map fi . mean') mean'' $ unzip $ myParListChunk 4
           [ (parallelQ ? id $ myForce) ([prod t | t <- ts], es_histo eps es)
           | i <- [0..n-1],
             let diag_v = diags Map.! (i,vk),
@@ -1688,7 +1688,6 @@ main = do
                         splitSet s | Set.size s < 100 = [s]
                                    | otherwise        = concatMap splitSet $ Set.splitRoot s
                         {-# INLINE cos' #-}
-                        -- abs . cos
                         cos' x = (even int ? 4 $ -4) * (1-frac) * frac
                           where (int,frac) = properFraction $ x/pi + 0.5 :: (Int, Double)
                         pLarge s | Set.null s = 1
@@ -1716,6 +1715,20 @@ main = do
     
     putStr "all OTOC energies: " -- histo binned by "OTOC es"
     print' $ es_histo diag_eps es
+    
+    let es'    = let n_=1024 in map (sinh . ((asinh (3*fromIntegral n)/n_)*)) [-n_..n_]
+        levels = myParListChunk 1
+               [ sum $ map multSigns $ Map.toList $ gc'Ham $ fromJust diag'Ham
+               | let bools = Random.randoms $ Random.mkStdGen $ Hashable.hash ("levels", seed') :: [Bool],
+                 signs <- [ IntMap.fromDistinctAscList $ map (,()) $ catMaybes $ zipWith justIf n_bools [0..n-1]
+                          | n_bools <- take (16*n) $ partitions n bools ],
+                 let multSigns (g,c) = toDouble $ if even $ IntMap.size $ IntMap.intersection signs (ik'G g) then c else -c ]
+    
+    putStr "energy level es: "
+    print es'
+    
+    putStr "energy levels: " -- histo binned by "energy level es"
+    print' $ es_histo (Set.toAscList $ Set.fromList levels) es'
   
   let cutStabs      = calcCutStabs dim $ stab'RG rg
       rotated_stabs = [ fromList'Ham ls $ map (first $ rotate_stab ls d0) $ Map.toList $ gc'Ham $ stab'RG rg

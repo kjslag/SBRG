@@ -1881,7 +1881,7 @@ main = do
   
 --   print $ length $ show rg
   
-  putStr "CPU time: "
+  putStr "CPU time:  "
   cpu_time <- CPUTime.getCPUTime
   print $ (1e-12::Double) * fromInteger cpu_time
   

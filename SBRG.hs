@@ -1356,7 +1356,9 @@ model_gen MajSquare ls [ly_] = basic_gen (ls++[ly0]) gen
                | z == 0    = [([x,y0],3)]
                | otherwise = [([x,y0],1),([x,y0+1],1)]
           where (y0,z) = divMod y 2
-        gen [x,y] (r:rs) = ([(gg x y ++ gg (x+1) y,r)], rs)
+        gen [x,0] rs0 = ([(gg x y ++ gg (x+1) y,r) | (y,r) <- zip [0..] rs], rs')
+          where (rs,rs') = splitAt ly rs0
+        gen [_,_] rs = ([], rs)
         gen _ _ = error "MajSquare"
 model_gen model ls [j,j'] | model == Haldane || model == HaldaneOpen = basic_gen (ls++[2]) gen
   where gen [x,0] rs_ =  let ((r,r'),rs) = first (splitAt 3) $ splitAt 6 rs_ in

@@ -9,6 +9,7 @@
 {-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
 -- :set -XTupleSections
 
+-- compile using -dynamic on archlinux
 {-# OPTIONS_GHC -Wall -Wno-unused-top-binds -Wno-unused-imports -Wno-orphans -O #-} -- -fllvm -fexcess-precision -optc-ffast-math -optc-O3
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
@@ -1075,10 +1076,12 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
                     -- extract diagonal terms
     (diag'',_G3)    = partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2 -- mergeUnionsBy (comparing fst) (\(g,c) (_,c') -> (g,c+c')) $ map pure _G2
                     -- keep only max_rg_terms terms
-    (_G4, trash')   = cut_terms True max_rg_terms _G3
+    (_G4, trash')   = cut_terms max_rg_terms _G3
     
-    cut_terms :: Bool -> Maybe Int -> [SigmaTerm] -> ([SigmaTerm],[SigmaTerm])
-    cut_terms sortQ = maybe (,[]) (\max_terms -> splitAt max_terms . if' sortQ sort'GT id)
+    cut_terms :: Maybe Int -> [SigmaTerm] -> ([SigmaTerm],[SigmaTerm])
+    cut_terms = maybe (,[]) $ maybe
+                  (\max_terms -> splitAt max_terms . sort'GT)
+                  (\c -> const $ partition ((>c) . abs . snd)) $ cut_terms_by_coeff $ ls'RG rg
     
 --     newHam  = ham4 +# _G4
 --     newDiag1 = diag     +# diag'
@@ -1289,7 +1292,7 @@ init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ conc
                                 $ flip State.evalState (randoms seed) $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
 
-data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | Haldane | HaldaneOpen | Cluster | ClusterOpen | ToricCode | Z2Gauge | Fibonacci
+data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | Haldane | HaldaneOpen | Cluster | ClusterOpen | ToricCode | Z2Gauge | KiteavHarmonic0 | KiteavHarmonic0_
   deriving (Eq, Show, Read, Enum)
 
 -- basic_gen :: [Int] -> ([([([Int],Int)],F)],a) -> ([Int],([SigmaTerm],a))
@@ -1379,6 +1382,40 @@ model_gen Z2Gauge ls [a,b',b,a'] = basic_gen (ls++[3]) gen
              ([([x,y,0],kB),([x,y,1],kb),([x-1,y,1],kb),([x,y-1,2],kb),([x,y,2],kb)],c)], rs)
         gen [_,_,_] rs = ([],rs)
         gen _       _  = error "Z2Gauge"
+model_gen KiteavHarmonic0 ls [kx,    ky,    kz                ] = model_gen KiteavHarmonic0 ls [kx,kx ,ky,ky ,kz,kz         ]
+model_gen KiteavHarmonic0 ls [kx,kx',ky,ky',kz,kz'            ] = model_gen KiteavHarmonic0 ls [kx,kx',ky,ky',kz,kz',0,0,0,0]
+model_gen KiteavHarmonic0 ls [kx,kx',ky,ky',kz,kz',ka,kb,kc,kd] = basic_gen (ls++[4]) gen
+  where (kX,kY,kZ,k') = (1,2,3,3)
+        gen [x,y,z,0] (rx1:rx2:ry1:ry2:rz1:rz2:rs)
+                         = (,rs) $ [ ([([x,y,z,3],kX),([x+1,y  ,z  ,0],kX)],f kx  rx1), --AD
+                                     ([([x,y,z,1],kX),([x  ,y  ,z+1,2],kX)],f kx' rx2), --BC
+                                     ([([x,y,z,0],kY),([x-1,y+1,z  ,3],kY)],f ky  ry1), --AD
+                                     ([([x,y,z,1],kY),([x  ,y  ,z  ,2],kY)],f ky' ry2), --BC
+                                     ([([x,y,z,0],kZ),([x  ,y  ,z  ,1],kZ)],f kz  rz1), --AB
+                                     ([([x,y,z,2],kZ),([x  ,y  ,z  ,3],kZ)],f kz' rz2), --CD
+                                     ([([x,y,z,0],k')                     ],  ka     ),
+                                     ([([x,y,z,1],k')                     ],  kb     ),
+                                     ([([x,y,z,2],k')                     ],  kc     ),
+                                     ([([x,y,z,3],k')                     ],  kd     ) ]
+        gen [_,_,_,_] rs = ([], rs)
+        gen _         _  = error "KiteavHarmonic0"
+        f = const
+--      f = (*)
+model_gen KiteavHarmonic0_ ls [k',kz,jz,h] = basic_gen (ls++[4]) gen
+  where gen [x,y,z,0] rs = (,rs) $ [ ([([x,y,z,0],3),([x,y,z,1],3)],kz),
+                                     ([([x,y,z,2],3),([x,y,z,3],3)],kz),
+                                     ([([x  ,y  ,z  ,0],1),([x  ,y  ,z  ,1],1),([x  ,y  ,z  ,2],1),([x,y  ,z  ,3],2),
+                                       ([x  ,y+1,z  ,0],2),([x  ,y+1,z  ,1],1),([x  ,y+1,z  ,2],1),([x,y+1,z  ,3],1),
+                                       ([x-1,y+1,z  ,3],3),([x+1,y  ,z  ,0],3)                                        ], k'),
+--                                      ([([x  ,y  ,z  ,0],1),([x  ,y  ,z  ,1],2),([x  ,y  ,z+1,2],2),([x,y  ,z+1,3],2),
+--                                        ([x  ,y+1,z  ,0],2),([x  ,y+1,z  ,1],2),([x  ,y+1,z+1,2],2),([x,y+1,z+1,3],1),
+--                                        ([x-1,y+1,z  ,3],3),([x+1,y  ,z+1,0],3)                                        ], k'),
+                                     ([([x  ,y  ,z  ,1],3),([x  ,y  ,z  ,2],3),([x  ,y+1,z  ,1],3),([x  ,y+1,z  ,2],3)], jz)
+--                                      ([([x  ,y  ,z  ,1],3),([x  ,y  ,z+1,2],3),([x  ,y+1,z  ,1],3),([x  ,y+1,z+1,2],3)], jz)
+                                   ]
+                                ++ [ ([([x,y,z,q],k)],h) | q <- [0..3], k <- [1..3] ]
+        gen [_,_,_,_] rs = ([], rs)
+        gen _         _  = error "KiteavHarmonic0"
 model_gen _ _ _ = error "model_gen"
 
 model_gen_apply_gamma :: Double -> ([Int],ModelGen) -> ([Int],ModelGen)
@@ -1477,10 +1514,14 @@ prettyPrint :: Bool
 prettyPrint = False
 
 fastSumQ :: Bool
-fastSumQ = True
+fastSumQ = False
 
 parallelQ :: Bool
 parallelQ = False
+
+cut_terms_by_coeff :: [Int] -> Maybe F
+cut_terms_by_coeff _ = Nothing
+-- cut_terms_by_coeff _ = let warning=() in Just 1e-45
 
 main :: IO ()
 main = do
@@ -1502,12 +1543,14 @@ main = do
   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
     :: IO (Int, Model, [Int], [F], Double, Int, Int)
   
-  let proj_OTOC = True
+  let proj_OTOC = False
       
       alterSeedQ     = True
       ternaryQ       = False
-      calc_EEQ       = not proj_OTOC
-      calc_aCorrQ    = not proj_OTOC
+      justDegenQ     = False
+      allStabsQ      = False
+      calc_EEQ       = not proj_OTOC && True
+      calc_aCorrQ    = not proj_OTOC && False
       calc_aCorr'Q   = False -- length ln2_ls <= 1
       calc_OTOC      = proj_OTOC
       detailedQ      = False
@@ -1516,7 +1559,7 @@ main = do
       full_diagQ     = calc_OTOC
       lrmiQ          = False
     --calc_momentsQ  = False
-      calc_corrLenQ  = not proj_OTOC
+      calc_corrLenQ  = not proj_OTOC && False
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
       max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1541,7 +1584,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "160907.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "190610.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1577,15 +1620,19 @@ main = do
     putStr "offdiag errors: "
     print $ cut_pow2 $ offdiag_errors'RG rg
     
-    putStr "stabilizer energies: "
-    print $ cut_pow2 $ map snd $ stab0'RG rg
-    
-    putStr "stabilizer sizes: "
-    print $ cut_pow2 $ map (size'G . fst) $ ordered_stab
+    unless justDegenQ $ do
+      putStr "stabilizer energies: "
+      print $ cut_pow2 $ map snd $ stab0'RG rg
+      
+      putStr "stabilizer sizes: "
+      print $ cut_pow2 $ map (size'G . fst) $ ordered_stab
     
     when (dim == 1) $ do
       putStr "stabilizer lengths: "
       print $ cut_pow2 $ map (length'G (head ls) . fst) $ ordered_stab
+      
+      putStr "stabilizer length and energy: "
+      print $ map (first $ length'G $ head ls) $ ordered_stab
   
   when detailedQ $ do
     putStr "stabilizers: "
@@ -1633,16 +1680,19 @@ main = do
         
         toTinys = map (first $ to'TinyG l_1d) . Map.toList
     
-    putStr "small stabilizers: " 
+    putStr "small stabilizers: "
     print $ map (first $ size'G)
-          $ uncurry (++) $ second (take 20) $ span ((==0) . snd) $ sortWith (abs . snd) $ toList'Ham $ stab'RG rg
+          $ (allStabsQ ? id $ uncurry (++) . second (take 20) . span ((==0) . snd))
+--           $ (let warning=() in take 0)
+          $ sortWith (abs . snd) $ toList'Ham $ stab'RG rg
     
-    all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ toTinys $ gc'Ham $ stab'RG rg
-    all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $
-      case diag'RG rg of
-           NoDiag           -> Nothing
-           Diag'MapGT     m -> Just $ toTinys m
-           Diag'MapTinyGT m -> Just $ Map.toList $ gc'MapTinyGT m
+    unless justDegenQ $ do
+      all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ toTinys $ gc'Ham $ stab'RG rg
+      all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $
+        case diag'RG rg of
+             NoDiag           -> Nothing
+             Diag'MapGT     m -> Just $ toTinys m
+             Diag'MapTinyGT m -> Just $ Map.toList $ gc'MapTinyGT m
 --  all_histos "c4 ham0"         (log_ns     , log_ns     ) log_ns         $ Map.toList  $  gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "diag c4 ham0"    (log_ns     , log_ns     ) log_ns         $ filter (all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
 --  all_histos "offdiag c4 ham0" (log_ns     , log_ns     ) log_ns         $ filter (not . all (==3) . ik'G . fst) $ Map.toList  $ gc'Ham  $   c4_ham0'RG rg 
@@ -1775,8 +1825,9 @@ main = do
       putStr "entanglement entropy 0d: " -- [(region separation, entanglement entropy, error)]
       print $ mapMeanError_0d entanglement_data_0d
       
-      putStr "long range mutual information 0d: "
-      print $ lrmi_data_0d
+      when (head ls0 >= 4) $ do
+        putStr "long range mutual information 0d: "
+        print $ lrmi_data_0d
   
   let wilson_loops x = [ [(i_xs ls [x,y,mu],k) | y <- [0..last ls0-1]] | (mu,k) <- [(1,1),(2,3)] ]
   
@@ -1893,11 +1944,11 @@ main = do
   endTime <- Clock.getTime Clock.Monotonic
   print $ (1e-9::Double) * (fromInteger $ on (-) Clock.toNanoSecs endTime startTime)
   
-  gcStatsQ <- GHC.getGCStatsEnabled
-  when gcStatsQ $ do
-    putStr "RAM used (MB): "
-    gcStats <- GHC.getGCStats
-    print $ GHC.peakMegabytesAllocated gcStats
+--   gcStatsQ <- GHC.getRTSStatsEnabled
+--   when gcStatsQ $ do
+--     putStr "RAM used (MB): "
+--     gcStats <- GHC.getRTSStats
+--     print $ GHC.gcStatsPeakMegabytesAllocated gcStats
 
 
 -- old entanglement code

@@ -1292,7 +1292,7 @@ init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ conc
                                 $ flip State.evalState (randoms seed) $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
 
-data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | Haldane | HaldaneOpen | Cluster | ClusterOpen | ToricCode | Z2Gauge | KiteavHarmonic0 | KiteavHarmonic0_
+data Model = RandFerm | Ising | XYZ | XYZ2 | MajChain | MajSquare | Haldane | HaldaneOpen | Cluster | ClusterOpen | ToricCode | Z2Gauge | KiteavHarmonic0 | KiteavHarmonic0_
   deriving (Eq, Show, Read, Enum)
 
 -- basic_gen :: [Int] -> ([([([Int],Int)],F)],a) -> ([Int],([SigmaTerm],a))
@@ -1347,6 +1347,17 @@ model_gen MajChain ls [t,t',g,g'] = basic_gen ls gen
               ([([x],kt'),([x+2],kt')],  g'*rg')
             ], rs)
         gen _ _ = error "MajChain"
+model_gen MajSquare ls [ly_] = basic_gen (ls++[ly0]) gen
+  where ly  = round $ toDouble ly_
+        ly0 = (ly-1)//2
+        gg x y | y >= ly   = error "gg"
+               | y == ly-1 = ([x,0],2) : [([x,y0'],3) | y0' <- [1..ly0-1]]
+               | y == ly-2 = [([x,y0],1)]
+               | z == 0    = [([x,y0],3)]
+               | otherwise = [([x,y0],1),([x,y0+1],1)]
+          where (y0,z) = divMod y 2
+        gen [x,y] (r:rs) = ([(gg x y ++ gg (x+1) y,r)], rs)
+        gen _ _ = error "MajSquare"
 model_gen model ls [j,j'] | model == Haldane || model == HaldaneOpen = basic_gen (ls++[2]) gen
   where gen [x,0] rs_ =  let ((r,r'),rs) = first (splitAt 3) $ splitAt 6 rs_ in
           ( [([([x,1],k),([x,2],k)],j*r!!(k-1)) | k <- [1..3]] ++

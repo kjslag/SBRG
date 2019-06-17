@@ -1,10 +1,7 @@
 -- author: Kevin Slagle
 -- github.com/kjslag/SBRG
 
--- ghci -fbreak-on-error
--- :set -fbreak-on-error
--- :set args 1 XYZ [4] [1,1,1] 1
--- :trace main
+-- stack install hashable NumInstances ieee754 safe clock parallel random strict
 
 {-# LANGUAGE TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
 -- :set -XTupleSections
@@ -14,6 +11,11 @@
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
 -- +RTS -hy && hp2ps -c SBRG.hp && okular SBRG.ps
+
+-- ghci -fbreak-on-error
+-- :set -fbreak-on-error
+-- :set args 1 XYZ [4] [1,1,1] 1
+-- :trace main
 
 import GHC.Prim (reallyUnsafePtrEquality#)
 import GHC.Exts (groupWith, sortWith, the)

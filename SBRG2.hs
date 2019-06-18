@@ -142,6 +142,9 @@ snd3 (_,y,_) = y
 thd3 :: (a,b,c) -> c
 thd3 (_,_,z) = z
 
+(***) :: (a -> a') -> (b -> b') -> (a, b) -> (a', b')
+(f *** g) (x, y) = (f x, g y)
+
 both :: (a -> b) -> (a,a) -> (b,b)
 both f = bimap f f
 
@@ -953,9 +956,10 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
                                  in  (Just (i3, j3), simp $ fromList'G [i3], g4s_)
       where g4s_ = [fst $ fromJust $ icomm g3 g3']
             simp = not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
-    unusedIs'    = maybe unusedIs (\(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]) ij3
+    unusedIs'    = flip (maybe unusedIs) ij3 $ \(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]
     parity_stab' = (fermionicQ &&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
-    g4_H0Gs'     = maybe [] (\(i3,j3) -> [Right (rms $ map (snd . fst) _G1, i3, j3)]) ij3 ++ map Left (reverse g4s)
+    g4_H0Gs'     = flip (maybe []) ij3 (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
+      where f x = flip traceShow x $ map fst3 $ rights x
     
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = not (any (flip IntSet.member unusedIs') $ toList'G g)
@@ -1287,17 +1291,10 @@ main = do
   print $ cut_pow2 $ offdiag_errors'RG rg
   
   putStr "stabilizer energies: "
-  print $ cut_pow2 $ map snd $ stab0'RG rg
+  print $ cut_pow2 $ map (abs . snd) $ stab0'RG rg
   
   putStr "stabilizer sizes: "
   print $ cut_pow2 $ map (size'G . fst) $ ordered_stab
-  
-  when (dim == 1) $ do
-    putStr "stabilizer lengths: "
-    print $ cut_pow2 $ map (length'G (head ls) . fst) $ ordered_stab
-    
-    putStr "stabilizer length and energy: "
-    print $ map (first $ length'G $ head ls) $ ordered_stab
   
   when detailedQ $ do
     putStr "stabilizers: "
@@ -1313,6 +1310,10 @@ main = do
       Just diag -> do putStr "effective Hamiltonian: "
                       print $ diag
       _         -> return ()
+  
+  putStr "small stabilizers: "
+  print $ (allStabsQ ? id $ uncurry (++) . second (take 20) . span ((==0) . snd))
+        $ sortWith snd $ map (size'G *** abs) $ toList'Ham $ stab'RG rg
   
   do
     let log_ns      = reverse $ takeWhile (/=0) $ iterate (flip div 2) n
@@ -1336,11 +1337,6 @@ main = do
             
             putStr $ name ++ " size-length histo: "
             print $ map (second $ length_histo nsL) $ generic_histo_ nsS' $ map (\gT@(g,_) -> (size'G g, gT)) gcs
-    
-    putStr "small stabilizers: "
-    print $ map (first $ size'G)
-          $ (allStabsQ ? id $ uncurry (++) . second (take 20) . span ((==0) . snd))
-          $ sortWith (abs . snd) $ toList'Ham $ stab'RG rg
     
     all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ Map.toList $ gc'Ham $ stab'RG rg
     all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $ Map.toList <$> diag'RG rg

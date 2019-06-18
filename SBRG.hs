@@ -1050,6 +1050,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     g4s_      = map g4s_meta'G $ find_G4s g3 g3'
     c4_ham0'  = c4s'Ham 1 g4s_ c4_ham0
     g4_H0Gs'  = Right (sort'GT $ map fst _G1, i3) : map Left (reverse g4s_)
+      where f x = flip traceShow x $ map fst $ rights x
     
                     -- apply c4 transformation
     ham2             = c4s'Ham 1 g4s_ ham1
@@ -1571,7 +1572,7 @@ main = do
       calc_OTOC      = proj_OTOC
       detailedQ      = False
       cut_powQ       = True
-      keep_diagQ     = length ln2_ls <= 1 || calc_OTOC
+      keep_diagQ     = False -- length ln2_ls <= 1 || calc_OTOC
       full_diagQ     = calc_OTOC
       lrmiQ          = False
     --calc_momentsQ  = False
@@ -1638,17 +1639,17 @@ main = do
     
     unless justDegenQ $ do
       putStr "stabilizer energies: "
-      print $ cut_pow2 $ map snd $ stab0'RG rg
+      print $ cut_pow2 $ map (abs . snd) $ stab0'RG rg
       
       putStr "stabilizer sizes: "
       print $ cut_pow2 $ map (size'G . fst) $ ordered_stab
     
-    when (dim == 1) $ do
-      putStr "stabilizer lengths: "
-      print $ cut_pow2 $ map (length'G (head ls) . fst) $ ordered_stab
-      
-      putStr "stabilizer length and energy: "
-      print $ map (first $ length'G $ head ls) $ ordered_stab
+--     when (dim == 1) $ do
+--       putStr "stabilizer lengths: "
+--       print $ cut_pow2 $ map (length'G (head ls) . fst) $ ordered_stab
+--       
+--       putStr "stabilizer length and energy: "
+--       print $ map (first $ length'G $ head ls) $ ordered_stab
   
   when detailedQ $ do
     putStr "stabilizers: "
@@ -1700,7 +1701,7 @@ main = do
     print $ map (first $ size'G)
           $ (allStabsQ ? id $ uncurry (++) . second (take 20) . span ((==0) . snd))
 --           $ (let warning=() in take 0)
-          $ sortWith (abs . snd) $ toList'Ham $ stab'RG rg
+          $ sortWith snd $ map (second abs) $ toList'Ham $ stab'RG rg
     
     unless justDegenQ $ do
       all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ toTinys $ gc'Ham $ stab'RG rg

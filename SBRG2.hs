@@ -18,7 +18,13 @@
 -- :set args 1 XYZ [4] [1,1,1] 1
 -- :trace main
 
-import GHC.Prim (reallyUnsafePtrEquality#)
+-- default:
+#ifndef FERMIONIC
+#ifndef BOSONIC
+#define BOSONIC
+#endif
+#endif
+
 import GHC.Exts (groupWith, sortWith, the)
 
 import Control.Applicative
@@ -80,6 +86,9 @@ import qualified Data.Map.Lazy   as LMap hiding (fromList, insert, delete, adjus
 -- error_ :: a
 -- error_ = error "compile with '-rtsopts -prof -fprof-auto' and run with '+RTS -xc' for a stack trace"
 
+todo :: a
+todo = undefined
+
 assert :: Bool -> a -> a
 assert True  = id
 assert False = error "assert"
@@ -88,14 +97,6 @@ asserting :: (a -> Bool) -> a -> a
 asserting q x = assert (q x) x
 
 -- generic
-
--- http://stackoverflow.com/a/9650222
--- http://lpaste.net/1364
-ptrEquality :: a -> a -> Bool
-ptrEquality !x !y =
-  case reallyUnsafePtrEquality# x y of
-       1# -> True
-       _  -> False
 
 if' :: Bool -> a -> a -> a
 if' True  x _ = x
@@ -228,12 +229,6 @@ unions = foldl' union []
 
 xor'IntSet :: IntSet -> IntSet -> IntSet
 xor'IntSet x y = IntSet.union x y `IntSet.difference` IntSet.intersection x y
-
--- intersectionList'IntSet :: IntSet -> IntSet -> [Int]
--- intersectionList'IntSet x y = IntSet.toList $ IntSet.intersection x y
--- intersectionList'IntSet x y
---   | IntSet.size x < IntSet.size y = filter (flip IntSet.member y) $ IntSet.toList x
---   | otherwise                     = intersectionList'IntSet y x
 
 mergeUsing :: (a -> a -> a) -> a -> [a] -> a
 mergeUsing f x_ xs_ = merge $ x_:xs_
@@ -433,15 +428,15 @@ instance Num LogFloat where
   fromInteger = fromDouble'LF . fromInteger
   negate (LogFloat s y) = LogFloat (not s) y
 
-check'LF :: Bool
-check'LF = and [isNaN z_ == isNaN'LF z' && (isNaN z_ || (z-eps <= z' && z' <= z+eps && (1/z_>0) == (1/z'>0) && compare x_ y_ == compare x y))
-           | x_ <- xs,
-             y_ <- xs,
-             let [x,y,z] = map fromDouble'LF [x_,y_,z_]
-                 z_      = x_ + y_
-                 z'      = x  + y
-                 eps = 1e-10]
-  where xs = [-infinity,-2,-1,-0,0,1,2,infinity,nan]
+-- check'LF :: Bool
+-- check'LF = and [isNaN z_ == isNaN'LF z' && (isNaN z_ || (z-eps <= z' && z' <= z+eps && (1/z_>0) == (1/z'>0) && compare x_ y_ == compare x y))
+--            | x_ <- xs,
+--              y_ <- xs,
+--              let [x,y,z] = map fromDouble'LF [x_,y_,z_]
+--                  z_      = x_ + y_
+--                  z'      = x  + y
+--                  eps = 1e-10]
+--   where xs = [-infinity,-2,-1,-0,0,1,2,infinity,nan]
 
 instance Fractional LogFloat where
   fromRational = fromDouble'LF . fromRational
@@ -569,12 +564,14 @@ instance Ord AbsF where
 
 -- Sigma
 
+type Index = Int
+type Pos   = Int
 type SigmaHash = Int
 
--- ik'G should always have even size
--- if size is 2 mod 4, then an implicit factor of i is included
+-- if bosonic, 00~1, 01~x, 10~y, 11~z
+-- if fermionic, is'G should always have even size, and if size is 2 mod 4, then an implicit factor of i is included
 data Sigma = Sigma {
-  ik'G   :: !IntSet,
+  is'G   :: !IntSet, -- Index set
   hash'G ::  SigmaHash }
 
 sigma :: IntSet -> Sigma
@@ -582,10 +579,21 @@ sigma ik = g
   where g = Sigma ik $ calc_hash'G g
 
 check'G :: Sigma -> Bool
-check'G = even . IntSet.size . ik'G
+check'G g = bosonicQ || even (IntSet.size $ is'G g)
 
 calc_hash'G :: Sigma -> SigmaHash
 calc_hash'G = hash . toList'G
+
+pos_i'G :: Index -> Pos
+pos_i'G | fermionicQ = id
+        | otherwise  = (`div` 2)
+
+xs_i'G :: Ls -> Index -> Xs
+xs_i'G ls = xs_pos ls . pos_i'G
+
+positions'G :: Sigma -> IntSet
+positions'G | fermionicQ = is'G
+            | otherwise  = IntSet.map pos_i'G . is'G
 
 -- http://hackage.haskell.org/package/hashable-1.2.4.0/docs/src/Data.Hashable.Class.html#line-452
 instance Hashable Sigma where
@@ -595,34 +603,38 @@ instance Hashable Sigma where
 instance MySeq Sigma
 
 instance Eq Sigma where
-  Sigma g1 hash1 == Sigma g2 hash2 = hash1==hash2 && (ptrEquality g1 g2 || g1==g2)
+  Sigma g1 hash1 == Sigma g2 hash2 = hash1==hash2 && g1==g2
 
 instance Ord Sigma where
-  Sigma g1 hash1 `compare` Sigma g2 hash2 =
-      compare hash1 hash2 <> (ptrEquality g1 g2 ? EQ $ compare g1 g2)
+  Sigma g1 hash1 `compare` Sigma g2 hash2 = compare hash1 hash2 <> compare g1 g2
 
 instance Show Sigma where
   showsPrec n g = showsPrec n $ toList'G g
 
 type SigmaTerm = (Sigma, F)
 
-toList'G :: Sigma -> [Int]
-toList'G = IntSet.toList . ik'G
+toList'G :: Sigma -> [Index]
+toList'G = IntSet.toList . is'G
 
-toList'GT :: SigmaTerm -> ([Int],F)
+toList'GT :: SigmaTerm -> ([Index],F)
 toList'GT = first toList'G
 
-toLists'G :: [Int] -> Sigma -> [[Int]]
-toLists'G ls = map (xs_i ls) . toList'G
-
-toLists'GT :: [Int] -> SigmaTerm -> ([[Int]],F)
-toLists'GT ls = first $ toLists'G ls
-
-fromList'G :: [Int] -> Sigma
+fromList'G :: [Index] -> Sigma
 fromList'G = asserting check'G . sigma . IntSet.fromList
 
-fromList'GT :: ([Int],F) -> SigmaTerm
+fromListB'G :: [(Pos,Int)] -> Sigma
+fromListB'G = assert bosonicQ fromList'G . concat . map f
+  where f (i,k) = case k of 0 -> []
+                            1 -> [2*i]
+                            2 -> [2*i+1]
+                            3 -> [2*i, 2*i+1]
+                            _ -> error "fromListB'G"
+
+fromList'GT :: ([Pos],F) -> SigmaTerm
 fromList'GT = first fromList'G
+
+fromListB'GT :: ([(Int,Int)],F) -> SigmaTerm
+fromListB'GT = first fromListB'G
 
 show'GTs :: [SigmaTerm] -> String
 show'GTs = if' prettyPrint (concat . intersperse " + " . map (\(g,c) -> show c ++ " σ" ++ show g)) show
@@ -634,18 +646,25 @@ scale'GT :: F -> SigmaTerm -> SigmaTerm
 scale'GT x (g,c) = (g,x*c)
 
 length'G :: Int -> Sigma -> Int
-length'G l = (l-) . maximum . modDifferences l . IntSet.toList . ik'G
+length'G l = (l-) . maximum . modDifferences l . IntSet.toList . is'G
 
 size'G :: Sigma -> Int
-size'G = IntSet.size . ik'G
+size'G = IntSet.size . is'G
 
 acommQ :: Sigma -> Sigma -> Bool
-acommQ g1 g2 = odd $ IntSet.size $ (IntSet.intersection `on` ik'G) g1 g2
+acommQ g1 g2 = odd $ IntSet.size $ is'G g1 `IntSet.intersection` f (is'G g2)
+  where f | fermionicQ = id
+          | otherwise  = IntSet.map $ \i -> even i ? i+1 $ i-1
+-- TODO implement fast version
 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
-multSigma (Sigma g1_ _) (Sigma g2_ _) = (s_ - sF g_, sigma g_)
-  where (s_,g_) = second IntSet.fromAscList $ f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) (sF g1_ + sF g2_, [])
-        sF g = case IntSet.size g `mod` 4 of
+multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, sigma $ xor'IntSet g1_ g2_)
+                                      | otherwise = (sF - sf gF, sigma gF) -- TODO second part is just an xor
+  where sB = sum $ map (\i -> even i ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map (\i -> even i ? i+1 $ i-1) g2_
+        -- TODO speed up
+        
+        (sF,gF) = second IntSet.fromAscList $ f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) (sf g1_ + sf g2_, [])
+        sf g = case IntSet.size g `mod` 4 of
                     0 -> 0
                     2 -> 1
                     _ -> error "multSigma"
@@ -699,9 +718,6 @@ localQ'Sigma n = \g -> size'G g < round max_n
 
 type MapGT = Map Sigma F
 
-toLists'MapGT :: MapGT -> [([Int],F)]
-toLists'MapGT = map toList'GT . Map.toList
-
 fromList'MapGT :: [SigmaTerm] -> MapGT
 fromList'MapGT = fromListWith' (+)
   where fromListWith' x y = Map.fromListWith x y
@@ -728,12 +744,13 @@ toSortedList'MASs gs_ = [ (g',c) | (AbsF c,gs) <- mergeUnionsBy (comparing fst) 
 -- Ham
 
 -- MapAbsSigmas is used so that acommCandidates_sorted is ordered by coefficient so that max_wolff_terms cuts is more efficient
+-- TODO get rid of that?
 data Ham = Ham {
   gc'Ham    :: !MapGT,                 -- Hamiltonian:  sigma matrix  -> coefficient
   lcgs'Ham  :: !MapAbsSigmas,          -- |coefficient| ->     local sigma matrices
   nlcgs'Ham :: !MapAbsSigmas,          -- |coefficient| -> non-local sigma matrices
-  icgs'Ham  :: !(IntMap MapAbsSigmas), -- local sigmas: site index -> |coefficient| -> local sigma matrices
-  ls'Ham    :: ![Int] }                -- system lengths
+  icgs'Ham  :: !(IntMap MapAbsSigmas), -- local sigmas: site index (/2 if bosonicQ) -> |coefficient| -> local sigma matrices
+  ls'Ham    :: !Ls }                   -- system lengths
   deriving (Show)
 
 n'Ham :: Ham -> Int
@@ -741,31 +758,22 @@ n'Ham = product . ls'Ham
 
 instance MySeq Ham
 
--- instance Show Ham where
---   show = show'GTs . Map.toList . gc'Ham
-
--- instance Show Ham where
---   showsPrec _ ham s = "fromLists'Ham " ++ show (ls'Ham ham) ++ " " ++ showsPrec 10 (toLists'Ham ham) s
-
 -- check'Ham :: Ham -> Bool
 -- check'Ham ham = ham == (fromLists'Ham (ls'Ham ham) $ toLists'Ham ham) && all check'Sigma (Map.keys $ gc'Ham ham)
 
-zero'Ham :: [Int] -> Ham
+zero'Ham :: Ls -> Ham
 zero'Ham ls = Ham Map.empty Map.empty Map.empty IntMap.empty ls
 
 toList'Ham :: Ham -> [SigmaTerm]
 toList'Ham = Map.toList . gc'Ham
 
-toLists'Ham :: Ham -> [([Int],F)]
-toLists'Ham = toLists'MapGT . gc'Ham
-
 toDescList'Ham :: Ham -> [SigmaTerm]
 toDescList'Ham ham = toSortedList'MASs [lcgs'Ham ham, nlcgs'Ham ham]
 
-fromList'Ham :: [Int] -> [SigmaTerm] -> Ham
+fromList'Ham :: Ls -> [SigmaTerm] -> Ham
 fromList'Ham ls = (zero'Ham ls +#)
 
-fromLists'Ham :: [Int] -> [([Int],F)] -> Ham
+fromLists'Ham :: Ls -> [([Index],F)] -> Ham
 fromLists'Ham ls = fromList'Ham ls . map fromList'GT
 
 null'Ham :: Ham -> Bool
@@ -787,7 +795,7 @@ insert'Ham gT@(!g,!c) ham@(Ham gc lcgs nlcgs icgs ls)
         lcgs'  = lcgs +# gT
         nlcgs' = nlcgs +# gT
         icgs'  = let cgs_  = Map.singleton (AbsF c) $ Set.singleton g
-                 in          IntMap.mergeWithKey (\_ gc0 _ -> Just $ gc0 +# gT) id id icgs $ IntMap.fromSet (const cgs_) $ ik'G g
+                 in          IntMap.mergeWithKey (\_ gc0 _ -> Just $ gc0 +# gT) id id icgs $ IntMap.fromSet (const cgs_) $ positions'G g
 
 delete'Ham :: Sigma -> Ham -> Ham
 delete'Ham = fst .* deleteLookup'Ham
@@ -806,7 +814,7 @@ deleteLookup'Ham g ham@(Ham gc lcgs nlcgs icgs ls) =
         lcgs'         = delete'MAS gT lcgs
         nlcgs'        = delete'MAS gT nlcgs
         icgs'         = IntMap.differenceWith (\cgs _ -> justIf' (not . Map.null) $ delete'MAS gT cgs) icgs
-                      $ IntMap.fromSet (const ()) $ ik'G g
+                      $ IntMap.fromSet (const ()) $ positions'G g
 
 deleteSigmas'Ham :: Foldable t => t Sigma -> Ham -> Ham
 deleteSigmas'Ham = foldl'_ delete'Ham
@@ -826,12 +834,12 @@ acommCandidates_sorted = toSortedList'MASs .* acommCandidates_
 
 acommCandidates_ :: Sigma -> Ham -> [MapAbsSigmas]
 acommCandidates_ g ham = nlcgs'Ham ham : IntMap.elems localSigmas
-  where localSigmas = IntMap.restrictKeys (icgs'Ham ham) $ ik'G g
+  where localSigmas = IntMap.restrictKeys (icgs'Ham ham) $ positions'G g
 
-nearbySigmas :: Int -> Ham -> MapAbsSigmas
+nearbySigmas :: Pos -> Ham -> MapAbsSigmas
 nearbySigmas i ham = nearbySigmas' [i] ham
 
-nearbySigmas' :: [Int] -> Ham -> MapAbsSigmas
+nearbySigmas' :: [Pos] -> Ham -> MapAbsSigmas
 nearbySigmas' is ham = nlcgs'Ham ham +# [IntMap.lookup i $ icgs'Ham ham | i <- is]
 
 -- the Maybe SigmaTerm has a +/- 1 coefficient
@@ -861,18 +869,18 @@ c4s'Ham dir = foldl'_ $ c4'Ham dir
 -- c4_wolff_'Ham _        _               dir (Left    g4     ) ham = c4'Ham dir g4 ham
 -- c4_wolff_'Ham onlyDiag max_wolff_terms dir (Right (_H0G,i3)) ham = deleteSigmas'Ham dels ham
 --                                                                  +# maybe id take max_wolff_terms new
---   where dels = not onlyDiag ? [] $ fromMaybe [] $ filter ((/=3) . (IntMap.! i3) . ik'G) . toList . NestedFold <$> IntMap.lookup i3 (icgs'Ham ham)
+--   where dels = not onlyDiag ? [] $ fromMaybe [] $ filter ((/=3) . (IntMap.! i3) . is'G) . toList . NestedFold <$> IntMap.lookup i3 (icgs'Ham ham)
 --         new = mergeSortedWith (AbsF . snd)
 --               [catMaybes [scale'GT dir <$> icomm'GT gT gT'
 --                          | gT <- acommCandidates_sorted (fst gT') ham,
---                            not onlyDiag || IntMap.findWithDefault 0 i3 (ik'G $ fst gT) /= 3 ]
+--                            not onlyDiag || IntMap.findWithDefault 0 i3 (is'G $ fst gT) /= 3 ]
 --               | gT' <- _H0G] -- check sort?
 -- 
 -- -- onlyDiag makes no guarantees!
 -- c4s_wolff_'Ham :: Bool -> Maybe Int -> F -> [G4_H0G] -> Ham -> Ham
 -- c4s_wolff_'Ham onlyDiag max_wolff_terms dir g4_H0Gs ham_ =
 --     if' onlyDiag diagFilter id $ foldl'_ (c4_wolff_'Ham onlyDiag max_wolff_terms dir) g4_H0Gs ham_
---   where diagFilter ham = ham -- foldl' (\ham' g -> all (==3) (ik'G g) ? ham' $ fst $ deleteLookup'Ham g ham') ham
+--   where diagFilter ham = ham -- foldl' (\ham' g -> all (==3) (is'G g) ? ham' $ fst $ deleteLookup'Ham g ham') ham
 --                        -- $ NestedFold $ nlcgs'Ham ham -- profile this?
 -- 
 -- c4s_wolff'Ham :: Maybe Int -> F -> [G4_H0G] -> Ham -> Ham
@@ -880,6 +888,7 @@ c4s'Ham dir = foldl'_ $ c4'Ham dir
 
 -- Diag
 
+-- TODO remove this
 type TinyGT = (TinyG, F)
 
 data TinyG = TinyG {
@@ -923,12 +932,11 @@ instance AddHash Diag (Sigma,F) where
 
 -- RG
 
-type G4_H0G = Either Sigma (F,Int,Int) -- Either g4 (rms of icomm H_0 Sigma/h_3^2, i3)
+type G4_H0G = Either Sigma (F,Int,Int) -- Either g4 (rms of icomm H_0 Sigma/h_3^2, i3, j3)
+-- if bosonic, the i3 bit and not the j3 bit is filled for the new stabilizer
 
 data RG = RG {
   ls0'RG             :: ![Int],
-  ham0'RG            :: !Ham,              -- original Ham in old basis
-  c4_ham0'RG         ::  Ham,              -- original ham in new basis
   ham'RG             :: !Ham,
   diag'RG            :: !Diag,
   unusedIs'RG        :: !IntSet,
@@ -965,13 +973,11 @@ wolff_errors'RG = map fst3 . rights . g4_H0Gs'RG
 
 init'RG :: [Int] -> Ham -> RG
 init'RG ls0 ham = rg
-  where rg = RG ls0 ham ham ham (Diag'MapGT Map.empty) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] False [] (Just []) [] [] (stabilizers rg) Nothing
-
-todo = undefined
+  where rg = RG ls0 ham (Diag'MapGT Map.empty) (IntSet.fromDistinctAscList [0..(n'Ham ham - 1)]) [] False [] (Just []) [] [] (stabilizers rg) Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
-rgStep rg@(RG _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms)
+rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms)
   | IntSet.null unusedIs = rg
   | otherwise            = myForce rg'
   where
@@ -980,54 +986,58 @@ rgStep rg@(RG _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     g3        = fromMaybe g3_ $ (fst<$>) $ listToMaybe $ toDescList'Ham ham1
       where g3_ = fromList'G $ take 2 $ IntSet.toList unusedIs
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
-    i3:j3_1   = IntSet.toList $ IntSet.intersection unusedIs $ ik'G g3
-    j3_2      = IntSet.toList $ IntSet.difference   unusedIs $ ik'G g3
-    (j3,g3',g4s_) = case (j3_1 , j3_2 ) of
-                         ([j3_], _    ) -> (Just j3_, g3 , [])
-                         (_    , j3_:_) -> (Just j3_, g3_, [fromList'G $ j3_:j3_1])
-                         _              -> (Nothing , g3 , [])
-      where g3_ = fst $ fromJust $ icomm (the g4s_) g3
-    unusedIs' = maybe unusedIs (\j3_ -> IntSet.delete i3 $ IntSet.delete j3_ unusedIs) j3
-    parity_stab' = assert (not $ isNothing j3 && parity_stab) $ isNothing j3 || parity_stab
-    c4_ham0'  = c4s'Ham 1 g4s_ c4_ham0
-    g4_H0Gs'  = maybe [] (\j3_ -> [Right (rms $ map (snd . fst) _G1, i3, j3_)]) j3 ++ map Left (reverse g4s_)
+    i3_1      = IntSet.toList $ unusedIs `IntSet.intersection` is'G g3
+    i3_2      = IntSet.toList $ unusedIs `IntSet.difference`   is'G g3
+    (ij3,g3',g4s) | fermionicQ = case (i3_1, i3_2) of
+                                      ([i3,j3], _) -> (Just (i3,j3), g3, [])
+                                      (i3:_, j3:_) -> (Just (i3,j3), simp $ fromList'G [i3,j3], g4s_)
+                                      (_, [])      -> (Nothing     , g3, [])
+                                      _            -> error "rgStep ij3"
+                  | otherwise  = let j3 = head i3_1
+                                     i3 = odd j3 ? j3-1 $ j3+1
+                                 in  (Just (i3, j3), simp $ fromList'G [i3], g4s_)
+      where g4s_ = [fst $ fromJust $ icomm g3 g3']
+            simp = not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
+    unusedIs'    = maybe unusedIs (\(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]) ij3
+    parity_stab' = (fermionicQ &&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
+    g4_H0Gs'     = maybe [] (\(i3,j3) -> [Right (rms $ map (snd . fst) _G1, i3, j3)]) ij3 ++ map Left (reverse g4s)
     
---     find_G4s :: Sigma -> Sigma -> [Sigma]
---     find_G4s g0 g1 = maybe (g0 == g1 ? [] $ find_G4s g_ g1 ++ find_G4s g0 g_) (pure . fst) $ icomm g0 g1
---       where g_     = todo
+    isDiag :: SigmaTerm -> Bool
+    isDiag (g,_) = not (any (flip IntSet.member unusedIs') $ toList'G g)
+                || fermionicQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g -- TODO just look at ground state, and then this simplifies
     
-                    -- apply c4 transformation
-    ham2             = c4s'Ham 1 g4s_ ham1
-                    -- get g3' coefficient
-    h3'              = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
-                    -- find sigma matrices that overlap with g3'
-                    -- split into diagonal matrices (diag') and anticommuting commutators (_G1)
-    (diag',_G1)      = first (filter isDiag) $ partitionEithers
-                     $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
-                     $ toList'MAS $ nearbySigmas i3 ham2              -- the minus is because we apply icomm twice
-                    -- remove anticommuting matrices from ham
-    ham3             = flip deleteSigmas'Ham ham2 $ map (fst . snd) _G1
-                    -- [Sigma, Delta]
-    _G_Delta         = [(icomm_sorted'Ham (g,1) ham3', c) | (g,c) <- map fst _G1]
-                       where ham3' = delete'Ham g3' ham3
-                    -- calc offdiag error
-    offdiag_error    = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst)
-                     $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
-                    -- remove diagonal matrices from ham
-    ham4             = flip deleteSigmas'Ham ham3 $ map fst diag'
-                    -- distribute _G1
-    _G2              = catMaybes $ myParListChunk 64
-                       [ icomm'GT gL gR
-                       | gLRs@((gL,_):_) <- init $ tails _G1,
-                         gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
-                    -- extract diagonal terms
-    (diag'',_G3)    = partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2
-                    -- keep only max_rg_terms terms
-    (_G4, trash')   = maybe (_G3,[]) (\max_terms -> splitAt max_terms $ sort'GT $ _G3) max_rg_terms
-    -- TODO allow more terms somehow. maybe reduce to ground state
+                  -- apply c4 transformation
+    ham2           = c4s'Ham 1 g4s ham1
+                  -- get g3' coefficient
+    h3'            = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
+                  -- find sigma matrices that overlap with g3'
+                  -- split into diagonal matrices (diag') and anticommuting commutators (_G1)
+    (diag',_G1)    = first (filter isDiag)
+                   $ maybe (toList'Ham ham2, []) `flip` ij3
+                   $ \(i3,j3) -> partitionEithers $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
+                              $ toList'MAS $ nearbySigmas' (nub $ map pos_i'G [i3,j3]) ham2 -- the minus is because we apply icomm twice
+                  -- remove anticommuting matrices from ham
+    ham3           = flip deleteSigmas'Ham ham2 $ map (fst . snd) _G1
+                  -- [Sigma, Delta]
+    _G_Delta       = [(icomm_sorted'Ham (g,1) ham3', c) | (g,c) <- map fst _G1]
+                     where ham3' = delete'Ham g3' ham3
+                  -- calc offdiag error
+    offdiag_error  = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst)
+                   $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
+                  -- remove diagonal matrices from ham
+    ham4           = flip deleteSigmas'Ham ham3 $ map fst diag'
+                  -- distribute _G1
+    _G2            = catMaybes $ myParListChunk 64
+                     [ icomm'GT gL gR
+                     | gLRs@((gL,_):_) <- init $ tails _G1,
+                       gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
+                  -- extract diagonal terms
+    (diag'',_G3)  = partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2
+                  -- keep only max_rg_terms terms
+    (_G4, trash') = maybe (_G3,[]) (\max_terms -> splitAt max_terms $ sort'GT $ _G3) max_rg_terms
+    -- TODO allow more terms by reducing to ground state
     
-    rg' = rg {c4_ham0'RG        = c4_ham0',
-              ham'RG            = ham4 +# _G4,
+    rg' = rg {ham'RG            = ham4 +# _G4,
               diag'RG           = diag +# [diag',diag''],
               unusedIs'RG       = unusedIs',
               g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
@@ -1037,16 +1047,14 @@ rgStep rg@(RG _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors 
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
               stab'RG           = stabilizers rg'}
-    
-    isDiag :: SigmaTerm -> Bool
-    isDiag (g,_) = not (any (flip IntSet.member unusedIs') $ toList'G g)
-                || parity_stab' && unusedIs `IntSet.isSubsetOf` ik'G g
 
 stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
 
 runRG :: RG -> RG
-runRG = until (IntSet.null . unusedIs'RG) rgStep
+runRG = until done rgStep
+  where done rg | fermionicQ = parity_stab'RG rg && ((==2) $ IntSet.size $ unusedIs'RG rg)
+                | otherwise  = IntSet.null $ unusedIs'RG rg
 
 -- return: RMS of <g> over all eigenstates
 -- Ham: the stabilizer Ham
@@ -1054,29 +1062,30 @@ rms'G :: Num a => Ham -> Sigma -> a
 rms'G stab g0 = boole $ null $ acommSigmas g0 stab
 
 -- entanglement entropy: arguments: list of region sizes and stabilizer Ham
-ee1d :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,Double,Double)]
+ee1d :: Ls -> ([X] -> [Sigma]) -> [L] -> [X] -> [(L,X,Double,Double)]
 ee1d ls cutStabs l0s x0s = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ ls cutStabs l0s x0s
 
-ee1d_ :: [Int] -> ([Int] -> [Sigma]) -> [Int] -> [Int] -> [(Int,Int,[Double])]
+ee1d_ :: Ls -> ([X] -> [Sigma]) -> [L] -> [X] -> [(L,X,[Double])]
 ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0,x+x0)]
                                       | x <- [0..head ls-1]])
                             | l0 <- l0s,
                               x0 <- x0s]
 
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
-regionEE_1d :: [Int] -> ([Int] -> [Sigma]) -> [(Int,Int)] -> Double
+regionEE_1d :: Ls -> ([X] -> [Sigma]) -> [(L,X)] -> Double
 regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
-  where n  = product ls
-        lY = product $ tail ls
+  where lsB = ls ++ (bosonicQ ? [2] $ [])
+        nB  = product lsB
+        lYB = product $ tail lsB
         lxs = map (second $ flip mod $ head ls) lxs_
         regionStabs = [sigma g'
-                      | g <- map ik'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
-                        let g' = IntSet.unions $ map (selRegion g . both (*lY)) lxs,
+                      | g <- map is'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
+                        let g' = IntSet.unions $ map (selRegion g . both (*lYB)) lxs,
                         not (IntSet.null g') && g /= g']
         -- intersect g with region [i..i+l-1]
         selRegion :: IntSet -> (Int,Int) -> IntSet
-        selRegion g (l,i) = (if i+l<n then                fst . IntSet.split (i+l)
-                                      else IntSet.union $ fst $ IntSet.split (i+l-n) g)
+        selRegion g (l,i) = (if i+l<nB then                fst . IntSet.split (i+l)
+                                       else IntSet.union $ fst $ IntSet.split (i+l-nB) g)
                           $ snd $ IntSet.split (i-1) g
         acommMat :: [Sigma] -> IntMap IntSet
         acommMat gs  = foldl' f IntMap.empty gs
@@ -1088,7 +1097,7 @@ regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionS
                          i0 = hash'G g0
 
 -- stabilizers that may have been cut by [x..x+lx/2-1]
-calcCutStabs :: Ham -> ([Int] -> [Sigma])
+calcCutStabs :: Ham -> ([X] -> [Sigma])
 calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
   where
     ls     = ls'Ham stab
@@ -1098,7 +1107,7 @@ calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
     modx_2 = flip mod lx_2
     
     localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) $ nub $ map modx_2 xs
-    x_i = head . xs_i ls
+    x_i = head . xs_i'G ls
     localStabs, nonlocalStabs :: [Sigma]
     [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
     -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
@@ -1112,41 +1121,78 @@ calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
                    | otherwise  = region0 (x',x)
       where dx = modx $ x' - x
 
-randoms :: Int -> [F]
+type Rands = [F]
+randoms :: Int -> Rands
 randoms seed = map toF $ Random.randoms $ Random.mkStdGen seed
 
-i_xs :: [Int] -> [Int] -> Int
-i_xs ls xs = foldl' (\i (l,x) -> i*l + mod x l) 0 $ zipExactNote "i_xs" ls xs
+type X  = Int
+type Xs = [X]
+type L  = Int
+type Ls = [L]
 
-i_xs' :: [Int] -> [Int] -> Int
-i_xs' ls xs = i_xs ls $ xs ++ replicate (length ls - length xs) 0
+pos_xs :: Ls -> Xs -> Pos
+pos_xs ls xs = foldl' (\i (l,x) -> i*l + mod x l) 0 $ zipExact ls xs
 
-xs_i :: [Int] -> Int -> [Int]
-xs_i ls i0 = map snd $ init $ scanr (\l (i,_) -> divMod i l) (i0,0) ls
+pos_xs' :: Ls -> Xs -> Pos
+pos_xs' ls xs = pos_xs ls $ xs ++ replicate (length ls - length xs) 0
+
+xs_pos :: Ls -> Pos -> Xs
+xs_pos ls i0 = map snd $ init $ scanr (\l (i,_) -> divMod i l) (i0,0) ls
 
 -- site -> randoms -> (SigmaTerms, unused_randoms)
-type ModelGen = Xs -> [F] -> ([SigmaTerm], [F])
-
-type Xs = [Int]
-type Ls = [Int]
+type ModelGen = Xs -> Rands -> ([SigmaTerm], Rands)
 
 init_generic'Ham :: Int -> (Ls,ModelGen) -> Ham
 init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ concat
                                 $ flip State.evalState (randoms seed) $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
 
-data Model = MajSquare | MajSquareOpen
+data Model =
+#ifdef BOSONIC
+  Ising | MajSquare | MajSquareOpen
+#else
+  MajSquareF
+#endif
   deriving (Eq, Show, Read, Enum)
 
-type RawSigmaTerm = ([Xs],F)
+#ifdef FERMIONIC
+type RawSigmaTermF  = ([Xs],F)
+basic_genF :: Ls -> (Xs -> Rands -> ([RawSigmaTermF], Rands)) -> (Ls,ModelGen)
+basic_genF ls gen = (ls, (\(gs,rs) -> ([fromList'GT (map (pos_xs ls) g,c) | (g,c) <- gs], rs)) .* gen)
+#else
+type RawSigmaTermB = ([(Xs,Int)],F)
+basic_genB :: Ls -> (Xs -> Rands -> ([RawSigmaTermB], Rands)) -> ([Int],ModelGen)
+basic_genB ls gen = (ls, (\(gs,rs) -> ([fromListB'GT (map (first $ pos_xs ls) g,c) | (g,c) <- gs], rs)) .* gen)
+#endif
 
-basic_gen :: Ls -> (Xs -> [F] -> ([RawSigmaTerm], [F])) -> ([Int],ModelGen)
-basic_gen ls gen = (ls, (\(gs,rs) -> ([fromList'GT (map (i_xs ls) g,c) | (g,c) <- gs], rs)) .* gen)
+model_gen :: Model -> Ls -> Rands -> (Ls,ModelGen)
+#ifdef BOSONIC
+model_gen Ising ls [j,k,h] = basic_genB ls gen
+  where (kj,kh) = (3,1)
+        gen [x] (rj:rk:rh:rs) =
+          ([ ([([x],kj),([x+1],kj)],j*rj), ([([x],kh),([x+1],kh)],k*rk), ([([x],kh)],h*rh) ], rs)
+        gen [x,y] (rjx:rjy:rkx:rky:rh:rs) =
+          ([ ([([x,y],kj),([x+1,y  ],kj)],j*rjx), ([([x,y],kh),([x+1,y  ],kh)],k*rkx), ([([x,y],kh)],h*rh),
+             ([([x,y],kj),([x  ,y+1],kj)],j*rjy), ([([x,y],kh),([x  ,y+1],kh)],k*rky) ], rs)
+        gen _ _ = error "Ising"
+model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB (ls++[ly0]) gen
+  where ly  = round $ toDouble ly_
+        ly0 = (ly-1)//2
+        oQ  = boole $ model == MajSquareOpen
+        gg x y | y >= ly-oQ = error "gg"
+               | y == ly-1  = ([x,0],2) : [([x,y0'],3) | y0' <- [1..ly0-1]]
+               | y == ly-2  = [([x,y0],1)]
+               | z == 0     = [([x,y0],3)]
+               | otherwise  = [([x,y0],1),([x,y0+1],1)]
+          where (y0,z) = divMod y 2
+        gen [x,0] rs0 = ([(gg x y ++ gg (x+1) y,r) | (y,r) <- zip [0..] rs], rs')
+          where (rs,rs') = splitAt (ly-oQ) rs0
+        gen [_,_] rs = ([], rs)
+        gen _ _ = error "MajSquare"
+#endif
+model_gen _ _ _ = error "model_gen"
 
-model_gen :: Model -> [Int] -> [F] -> ([Int],ModelGen)
-model_gen = todo
-
-model_gen_apply_gamma :: Double -> ([Int],ModelGen) -> ([Int],ModelGen)
+model_gen_apply_gamma :: Double -> (Ls,ModelGen) -> (Ls,ModelGen)
 model_gen_apply_gamma gamma (ls,gen) = (ls, first (map $ second $ gamma==0 ? (boole . (/=0)) $ (`powF` gamma)) .* gen)
 
 -- [bins (upper bound)] -> [(bin,x)] -> [(bin,xs)]
@@ -1186,14 +1232,16 @@ succIEEEF = succIEEE'LF
 
 -- main
 
-fermionicQ :: Bool
+fermionicQ, bosonicQ :: Bool
 #ifdef FERMIONIC
 fermionicQ = True
-#elif defined BOSONIC
-fermionicQ = False
 #else
-fermionicQ = True
+fermionicQ = False
 #endif
+bosonicQ = not fermionicQ
+
+bifurcationQ :: Bool
+bifurcationQ = True -- TODO implement false
 
 prettyPrint :: Bool
 prettyPrint = False
@@ -1256,7 +1304,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190613.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "190617.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1271,7 +1319,7 @@ main = do
   
   when detailedQ $ do
     putStr "Hamiltonian: "
-    print $ ham0'RG rg0
+    print $ ham'RG rg0
   
   let n_missing = length $ takeWhile ((==0) . snd) $ stab0'RG rg
       cut_pow2 = reverse . if' (cut_powQ && not small_lsQ) (filter $ isPow2 . fst) id . zip [1..]
@@ -1314,9 +1362,6 @@ main = do
       Diag'MapGT diag -> do putStr "effective Hamiltonian: "
                             print $ diag
       _ -> return ()
-    
-    putStr "holographic Hamiltonian: "
-    print $ c4_ham0'RG rg
   
   do
     let log_ns      = reverse $ takeWhile (/=0) $ iterate (flip div 2) n

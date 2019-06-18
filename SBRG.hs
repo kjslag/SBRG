@@ -1033,10 +1033,11 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     _G2, _G3, _G4 :: [SigmaTerm]
     g3        = fromMaybe g3__ g3_
       where g3_  = (fst<$>) $ listToMaybe $ toDescList'Ham ham1
-            g3__ = case model of
-                        ToricCode -> head $ sortOn calc_size $ map (sigma 0 . IntMap.fromListWith undefined . filter ((/=0) . snd))
-                                          $ tail $ traverse (\i -> map (i,) [0..3]) $ IntSet.toList unusedIs
-                        _ -> (!!1) $ sortOn calc_size [sigma 0 $ IntMap.fromSet (const k) unusedIs | k <- [1..3]]
+            g3__ = sigma 0 $ IntMap.singleton (IntSet.findMin unusedIs) 3
+--             g3__ = case model of
+--                         ToricCode -> head $ sortOn calc_size $ map (sigma 0 . IntMap.fromListWith undefined . filter ((/=0) . snd))
+--                                           $ tail $ traverse (\i -> map (i,) [0..3]) $ IntSet.toList unusedIs
+--                         _ -> (!!1) $ sortOn calc_size [sigma 0 $ IntMap.fromSet (const k) unusedIs | k <- [1..3]]
             calc_size = size'G . fst . c4s (-1) (g4s'RG rg) . (,0)
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
   --unusedIs_ = IntMap.fromSet (const ()) unusedIs

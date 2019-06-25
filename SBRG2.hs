@@ -612,7 +612,10 @@ instance Ord Sigma where
   Sigma g1 hash1 `compare` Sigma g2 hash2 = compare hash1 hash2 <> compare g1 g2
 
 instance Show Sigma where
-  showsPrec n g = showsPrec n $ toList'G g
+  showsPrec n = showsPrec n . toList'G
+
+-- instance Read Sigma where
+--   readsPrec n = map (first fromList'G) . readsPrec n
 
 type SigmaTerm = (Sigma, F)
 
@@ -663,7 +666,9 @@ acommQ g1 g2 = odd $ IntSet.size $ is'G g1 `IntSet.intersection` f (is'G g2)
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
 multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, sigma $ xor'IntSet g1_ g2_)
                                       | otherwise = (sF - sf gF, sigma gF) -- TODO second part is just an xor
-  where sB = sum $ map (\i -> even i ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map (\i -> even i ? i+1 $ i-1) g2_
+  where sB = sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
+          where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
+                flip_ i = even i ? i+1 $ i-1
         -- TODO speed up
         
         (sF,gF) = second IntSet.fromAscList $ f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) (sf g1_ + sf g2_, [])
@@ -956,25 +961,25 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
                                  in  (Just (i3, j3), simp $ fromList'G [i3], g4s_)
       where g4s_ = [fst $ fromJust $ icomm g3 g3']
             simp = not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
-    unusedIs'    = flip (maybe unusedIs) ij3 $ \(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]
+    unusedIs'    = maybe unusedIs `flip` ij3 $ \(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]
     parity_stab' = (fermionicQ &&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
-    g4_H0Gs'     = flip (maybe []) ij3 (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
-      where f x = flip traceShow x $ map fst3 $ rights x
+    g4_H0Gs'     = (maybe [] `flip` ij3) (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
     
     isDiag :: SigmaTerm -> Bool
-    isDiag (g,_) = not (any (flip IntSet.member unusedIs') $ toList'G g)
+    isDiag (g,_) = unusedIs' `IntSet.disjoint` is'G g
                 || fermionicQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g -- TODO just look at ground state, and then this simplifies
     
                   -- apply c4 transformation
     ham2           = c4s'Ham 1 g4s ham1
                   -- get g3' coefficient
-    h3'            = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
+    h3'            = assert (gc'Ham (c4s'Ham (-1) g4s ham2) == gc'Ham ham1) -- TODO fix
+                   $ fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
                   -- find sigma matrices that overlap with g3'
                   -- split into diagonal matrices (diag') and anticommuting commutators (_G1)
     (diag',_G1)    = first (filter isDiag)
                    $ maybe (toList'Ham ham2, []) `flip` ij3
                    $ \(i3,j3) -> partitionEithers $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
-                              $ toList'MAS $ nearbySigmas' (nub $ map pos_i'G [i3,j3]) ham2 -- the minus is because we apply icomm twice
+                               $ toList'MAS $ nearbySigmas' (nub $ map pos_i'G [i3,j3]) ham2 -- the minus is because we apply icomm twice
                   -- remove anticommuting matrices from ham
     ham3           = flip deleteSigmas'Ham ham2 $ map (fst . snd) _G1
                   -- [Sigma, Delta]
@@ -986,7 +991,7 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
                   -- remove diagonal matrices from ham
     ham4           = flip deleteSigmas'Ham ham3 $ map fst diag'
                   -- distribute _G1
-    _G2            = catMaybes $ myParListChunk 64
+    _G2            = map fromJust $ myParListChunk 64
                      [ icomm'GT gL gR
                      | gLRs@((gL,_):_) <- init $ tails _G1,
                        gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
@@ -1002,7 +1007,7 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
               g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
               parity_stab'RG    = parity_stab',
               offdiag_errors'RG = offdiag_error : offdiag_errors,
-              trash'RG          = Nothing, -- (trash':) <$> trash,
+              trash'RG          = (trash':) <$> trash,
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
               stab'RG           = stabilizers rg'}
@@ -1108,7 +1113,7 @@ init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ conc
 
 data Model =
 #ifdef BOSONIC
-  Ising | MajSquare | MajSquareOpen
+  Ising | XYZ | MajSquare | MajSquareOpen
 #else
   MajSquareF
 #endif
@@ -1134,6 +1139,10 @@ model_gen Ising ls [j,k,h] = basic_genB ls gen
           ([ ([([x,y],kj),([x+1,y  ],kj)],j*rjx), ([([x,y],kh),([x+1,y  ],kh)],k*rkx), ([([x,y],kh)],h*rh),
              ([([x,y],kj),([x  ,y+1],kj)],j*rjy), ([([x,y],kh),([x  ,y+1],kh)],k*rky) ], rs)
         gen _ _ = error "Ising"
+model_gen XYZ ls j = basic_genB ls gen
+  where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
+          ([ ([([x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3] ], rs)
+        gen _ _ = error "XYZ"
 model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB (ls++[ly0]) gen
   where ly  = round $ toDouble ly_
         ly0 = (ly-1)//2

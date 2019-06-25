@@ -136,6 +136,9 @@ snd3 (_,y,_) = y
 thd3 :: (a,b,c) -> c
 thd3 (_,_,z) = z
 
+(***) :: (a -> a') -> (b -> b') -> (a, b) -> (a', b')
+(f *** g) (x, y) = (f x, g y)
+
 both :: (a -> b) -> (a,a) -> (b,b)
 both f = bimap f f
 
@@ -623,6 +626,10 @@ type SigmaTerm = (Sigma, F)
 check'Sigma :: Sigma -> Bool
 check'Sigma g = all (\k -> 1<=k && k<=3) $ IntMap.elems $ ik'G g
 
+-- debugging only
+fromList'G :: [(Int,Int)] -> Sigma
+fromList'G = sigma 0 . IntMap.fromListWith (error "fromList'GT")
+
 toList'GT :: SigmaTerm -> ([(Int,Int)],F)
 toList'GT = first $ IntMap.toList . ik'G
 
@@ -633,7 +640,7 @@ toLists'GT :: [Int] -> SigmaTerm -> ([([Int],Int)],F)
 toLists'GT ls = first $ toLists'G ls
 
 fromList'GT :: Int -> ([(Int,Int)],F) -> SigmaTerm
-fromList'GT iD = first $ \g -> sigma iD $ IntMap.fromListWith (error $ "fromList'GT: " ++ show g) g
+fromList'GT iD = first $ \g -> sigma iD $ IntMap.fromListWith (error "fromList'GT") g
 
 show'GTs :: [SigmaTerm] -> String
 show'GTs = if' prettyPrint (concat . intersperse " + " . map (\(g,c) -> show c ++ " σ" ++ show g)) show
@@ -1025,7 +1032,7 @@ init'RG model ls0 ham = rg
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 rgStep :: RG -> RG
-rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 stab1 _ _ max_rg_terms _)
+rgStep rg@(RG _ _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash stab0 stab1 _ _ max_rg_terms _)
   | IntSet.null unusedIs = rg
   | otherwise            = myForce $ update_meta'RG rg rg'
   where
@@ -1038,7 +1045,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
 --                         ToricCode -> head $ sortOn calc_size $ map (sigma 0 . IntMap.fromListWith undefined . filter ((/=0) . snd))
 --                                           $ tail $ traverse (\i -> map (i,) [0..3]) $ IntSet.toList unusedIs
 --                         _ -> (!!1) $ sortOn calc_size [sigma 0 $ IntMap.fromSet (const k) unusedIs | k <- [1..3]]
-            calc_size = size'G . fst . c4s (-1) (g4s'RG rg) . (,0)
+--             calc_size = size'G . fst . c4s (-1) (g4s'RG rg) . (,0)
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
   --unusedIs_ = IntMap.fromSet (const ()) unusedIs
   --i3        = snd $ the $ until (null . drop 1) (\is -> let is' = filter (even . fst) is in map (first (flip div 2)) $ null is' ? is $ is') $ map (\i -> (i,i))
@@ -1050,7 +1057,6 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
     g4s_      = map g4s_meta'G $ find_G4s g3 g3'
     c4_ham0'  = c4s'Ham 1 g4s_ c4_ham0
     g4_H0Gs'  = Right (sort'GT $ map fst _G1, i3) : map Left (reverse g4s_)
-      where f x = flip traceShow x $ map fst $ rights x
     
                     -- apply c4 transformation
     ham2             = c4s'Ham 1 g4s_ ham1
@@ -1072,7 +1078,7 @@ rgStep rg@(RG model _ _ c4_ham0 ham1 diag unusedIs g4_H0Gs offdiag_errors trash 
                     -- remove diagonal matrices from ham
     ham4             = flip deleteSigmas'Ham ham3 $ map fst diag'
                     -- distribute _G1
-    _G2              = catMaybes $ myParListChunk 64
+    _G2              = map fromJust $ myParListChunk 64
                        [ icomm'GT gL gR
                        | gLRs@((gL,_):_) <- init $ tails _G1,
                          gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]

@@ -846,7 +846,7 @@ acommSigmas_sorted g = filter (acommQ g . fst) . acommCandidates_sorted g
 {-# SCC acommCandidates #-}
 acommCandidates :: Sigma -> Ham -> [SigmaTerm]
 acommCandidates = (\(nlgs:lgs) -> toList'MAS nlgs ++ toSortedList'MASs lgs) .* acommCandidates_
-  -- toSortedList'MASs is needs so that we take unions of g
+  -- toSortedList'MASs is needed so that we take unions of g
 
 {-# SCC acommCandidates_sorted #-}
 acommCandidates_sorted :: Sigma -> Ham -> [SigmaTerm]
@@ -1082,13 +1082,9 @@ regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionS
                           $ snd $ IntSet.split (i-1) g
         {-# SCC acommMat #-}
         acommMat :: [Sigma] -> IntMap IntSet
-        acommMat gs  = foldl' f IntMap.empty gs
-          where  gs' = fromList'Ham ls $ map (,1::F) gs
-                 add i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
-                 f mat0 g0 = foldl'_ (\j -> add i0 j . add j i0) iDs mat0
-                   where iDs = map hash'G $ filter (\g -> hash'G g < i0 && acommQ g g0)
-                             $ map fst $ acommCandidates g0 gs'
-                         i0 = hash'G g0
+        acommMat gs = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip [0..] gs, g2 <- gs'] IntMap.empty
+          where add i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
+                f ((i,gi), (j,gj)) = acommQ gi gj ? add i j . add j i $ id
 
 -- stabilizers that may have been cut by [x..x+lx/2-1]
 {-# SCC calcCutStabs #-}

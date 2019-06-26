@@ -3,7 +3,7 @@
 
 -- SBRG2.hs uses Majorana fermions while SBRG.hs uses spins
 
--- stack install hashable NumInstances ieee754 safe clock parallel random strict
+-- stack --profile install hashable NumInstances ieee754 safe clock parallel random strict
 
 {-# LANGUAGE CPP, TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
 -- :set -XTupleSections
@@ -11,7 +11,7 @@
 {-# OPTIONS_GHC -Wall -Wno-unused-top-binds -Wno-unused-imports -Wno-orphans -O #-} -- -fllvm -fexcess-precision -optc-ffast-math -optc-O3
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
--- +RTS -hy && hp2ps -c SBRG.hp && okular SBRG.ps
+-- +RTS -hy && hp2ps -c SBRG2p.hp && okular SBRG2p.ps
 
 -- ghci -fbreak-on-error
 -- :set -fbreak-on-error
@@ -487,6 +487,7 @@ xorRow'Z2Mat row i (Z2Mat rows cols) = Z2Mat rows' cols'
 
 -- rankZ2
 
+{-# SCC rankZ2 #-}
 rankZ2 :: IntMap IntSet -> Int
 rankZ2 = go 0 . fromSymmetric'Z2Mat
   where
@@ -584,6 +585,7 @@ sigma ik = g
 check'G :: Sigma -> Bool
 check'G g = bosonicQ || even (IntSet.size $ is'G g)
 
+{-# SCC calc_hash'G #-}
 calc_hash'G :: Sigma -> SigmaHash
 calc_hash'G = hash . toList'G
 
@@ -606,10 +608,10 @@ instance Hashable Sigma where
 instance MySeq Sigma
 
 instance Eq Sigma where
-  Sigma g1 hash1 == Sigma g2 hash2 = hash1==hash2 && g1==g2
+  Sigma _ hash1 == Sigma _ hash2 = hash1 == hash2
 
 instance Ord Sigma where
-  Sigma g1 hash1 `compare` Sigma g2 hash2 = compare hash1 hash2 <> compare g1 g2
+  Sigma _ hash1 `compare` Sigma _ hash2 = compare hash1 hash2
 
 instance Show Sigma where
   showsPrec n = showsPrec n . toList'G
@@ -651,22 +653,27 @@ sort'GT = sortWith (AbsF . snd)
 scale'GT :: F -> SigmaTerm -> SigmaTerm
 scale'GT x (g,c) = (g,x*c)
 
+{-# SCC length'G #-} 
 length'G :: Int -> Sigma -> Int
 length'G l = (l-) . maximum . modDifferences l . IntSet.toList . positions'G
 
+{-# SCC size'G #-} 
 size'G :: Sigma -> Int
 size'G = IntSet.size . positions'G
 
+{-# SCC acommQ #-} 
 acommQ :: Sigma -> Sigma -> Bool
 acommQ g1 g2 = odd $ IntSet.size $ is'G g1 `IntSet.intersection` f (is'G g2)
   where f | fermionicQ = id
           | otherwise  = IntSet.map $ \i -> even i ? i+1 $ i-1
 -- TODO implement fast version
 
+{-# SCC multSigma #-} 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
-multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, sigma $ xor'IntSet g1_ g2_)
+multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, g_)
                                       | otherwise = (sF - sf gF, sigma gF) -- TODO second part is just an xor
-  where sB = sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
+  where g_ = {-# SCC "g_" #-} sigma $ xor'IntSet g1_ g2_
+        sB = {-# SCC "sB" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
           where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
                 flip_ i = even i ? i+1 $ i-1
         -- TODO speed up
@@ -717,6 +724,7 @@ c4 g4 g = icomm g g4
 c4s :: F -> [Sigma] -> SigmaTerm -> SigmaTerm
 c4s dir g4s gT = foldl' (\gT'@(!g',!c') g4 -> maybe gT' (scale'GT $ dir*c') $ c4 g4 g') gT g4s
 
+{-# SCC localQ'Sigma #-} 
 localQ'Sigma :: Int -> Sigma -> Bool
 localQ'Sigma n = \g -> size'G g < round max_n
   where max_n = sqrt $ fromIntegral n :: Double
@@ -726,9 +734,9 @@ localQ'Sigma n = \g -> size'G g < round max_n
 
 type MapGT = Map Sigma F
 
+{-# SCC fromList'MapGT #-}
 fromList'MapGT :: [SigmaTerm] -> MapGT
-fromList'MapGT = fromListWith' (+)
-  where fromListWith' x y = Map.fromListWith x y
+fromList'MapGT = Map.fromListWith (+)
 
 instance MySeq MapGT
 
@@ -743,11 +751,10 @@ toList'MAS :: MapAbsSigmas -> [SigmaTerm]
 toList'MAS gs_ = [(g,c) | (AbsF c,gs) <- Map.toAscList gs_,
                           g <- Set.toList gs]
 
+{-# SCC toSortedList'MASs #-}
 toSortedList'MASs :: [MapAbsSigmas] -> [SigmaTerm]
-toSortedList'MASs gs_ = [ (g',c) | (AbsF c,gs) <- mergeUnionsBy (comparing fst) (\(c,s) (_,s') -> (c, union'Set s s')) $ map Map.toAscList gs_,
-                             g' <- toList'Set gs ]
-  where union'Set x y = Set.union x y
-        toList'Set x = Set.toList x
+toSortedList'MASs gs_ = [ (g',c) | (AbsF c,gs) <- mergeUnionsBy (comparing fst) (\(c,s) (_,s') -> (c, Set.union s s')) $ map Map.toAscList gs_,
+                                   g' <- Set.toList gs ]
 
 -- Ham
 
@@ -787,6 +794,7 @@ fromLists'Ham ls = fromList'Ham ls . map fromList'GT
 null'Ham :: Ham -> Bool
 null'Ham = Map.null . gc'Ham
 
+{-# SCC insert'Ham #-}
 insert'Ham :: SigmaTerm -> Ham -> Ham
 insert'Ham gT@(!g,!c) ham@(Ham gc lcgs nlcgs icgs ls)
 -- | c == 0       = ham -- this line would break stab'RG
@@ -799,14 +807,18 @@ insert'Ham gT@(!g,!c) ham@(Ham gc lcgs nlcgs icgs ls)
   |  otherwise = maybe id (insert'Ham . (g,)) (fromJust c_ +? c) $ delete'Ham g ham
   where c_     = Map.lookup g gc
         localQ = localQ'Sigma (n'Ham ham) g
+        {-# SCC lcgs' #-}
         lcgs'  = lcgs +# gT
+        {-# SCC nlcgs' #-}
         nlcgs' = nlcgs +# gT
+        {-# SCC icgs' #-}
         icgs'  = let cgs_  = Map.singleton (AbsF c) $ Set.singleton g
                  in          IntMap.mergeWithKey (\_ gc0 _ -> Just $ gc0 +# gT) id id icgs $ IntMap.fromSet (const cgs_) $ positions'G g
 
 delete'Ham :: Sigma -> Ham -> Ham
 delete'Ham = fst .* deleteLookup'Ham
 
+{-# SCC deleteLookup'Ham #-}
 deleteLookup'Ham :: Sigma -> Ham -> (Ham, F)
 deleteLookup'Ham g ham@(Ham gc lcgs nlcgs icgs ls) =
   (Ham gc'
@@ -831,13 +843,16 @@ acommSigmas g = filter (acommQ g . fst) . acommCandidates g
 acommSigmas_sorted :: Sigma -> Ham -> [SigmaTerm]
 acommSigmas_sorted g = filter (acommQ g . fst) . acommCandidates_sorted g
 
+{-# SCC acommCandidates #-}
 acommCandidates :: Sigma -> Ham -> [SigmaTerm]
 acommCandidates = (\(nlgs:lgs) -> toList'MAS nlgs ++ toSortedList'MASs lgs) .* acommCandidates_
   -- toSortedList'MASs is needs so that we take unions of g
 
+{-# SCC acommCandidates_sorted #-}
 acommCandidates_sorted :: Sigma -> Ham -> [SigmaTerm]
 acommCandidates_sorted = toSortedList'MASs .* acommCandidates_
 
+{-# SCC acommCandidates_ #-}
 acommCandidates_ :: Sigma -> Ham -> [MapAbsSigmas]
 acommCandidates_ g ham = nlcgs'Ham ham : IntMap.elems localSigmas
   where localSigmas = IntMap.restrictKeys (icgs'Ham ham) $ positions'G g
@@ -845,6 +860,7 @@ acommCandidates_ g ham = nlcgs'Ham ham : IntMap.elems localSigmas
 nearbySigmas :: Pos -> Ham -> MapAbsSigmas
 nearbySigmas i ham = nearbySigmas' [i] ham
 
+{-# SCC nearbySigmas' #-}
 nearbySigmas' :: [Pos] -> Ham -> MapAbsSigmas
 nearbySigmas' is ham = nlcgs'Ham ham +# [IntMap.lookup i $ icgs'Ham ham | i <- is]
 
@@ -852,6 +868,7 @@ nearbySigmas' is ham = nlcgs'Ham ham +# [IntMap.lookup i $ icgs'Ham ham | i <- i
 icomm_sorted'Ham :: SigmaTerm -> Ham -> [(Maybe SigmaTerm, F)]
 icomm_sorted'Ham (g,c) ham = map (\(g',c') -> (icomm g g', c*c')) $ acommCandidates_sorted g ham
 
+{-# SCC c4'Ham #-}
 c4'Ham :: F -> Sigma -> Ham -> Ham
 c4'Ham dir g4 ham = uncurry (+#) $ foldl' delSigma (ham,[]) $ map fst $ acommCandidates g4 ham
   where delSigma (!ham0,!gTs) g = case c4 g4 g of
@@ -939,6 +956,7 @@ init'RG ls0 ham = rg
              [] False [] (Just []) [] [] (stabilizers rg) Nothing
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
+{-# SCC rgStep #-}
 rgStep :: RG -> RG
 rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms)
   | IntSet.null unusedIs = rg
@@ -951,6 +969,7 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
     i3_1      = IntSet.toList $ unusedIs `IntSet.intersection` is'G g3
     i3_2      = IntSet.toList $ unusedIs `IntSet.difference`   is'G g3
+    {-# SCC g4s #-}
     (ij3,g3',g4s) | fermionicQ = case (i3_1, i3_2) of
                                       ([i3,j3], _) -> (Just (i3,j3), g3, [])
                                       (i3:_, j3:_) -> (Just (i3,j3), simp $ fromList'G [i3,j3], g4s_)
@@ -965,42 +984,44 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     parity_stab' = (fermionicQ &&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
     g4_H0Gs'     = (maybe [] `flip` ij3) (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
     
+    {-# SCC isDiag #-}
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = unusedIs' `IntSet.disjoint` is'G g
                 || fermionicQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g -- TODO just look at ground state, and then this simplifies
     
-                  -- apply c4 transformation
+    {-# SCC ham2 #-} -- apply c4 transformation
     ham2           = c4s'Ham 1 g4s ham1
-                  -- get g3' coefficient
+    {-# SCC h3' #-} -- get g3' coefficient
     h3'            = assert (gc'Ham (c4s'Ham (-1) g4s ham2) == gc'Ham ham1) -- TODO fix
                    $ fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
                   -- find sigma matrices that overlap with g3'
                   -- split into diagonal matrices (diag') and anticommuting commutators (_G1)
-    (diag',_G1)    = first (filter isDiag)
+    (diag',_G1)    = {-# SCC "diag',_G1" #-}first (filter isDiag)
                    $ maybe (toList'Ham ham2, []) `flip` ij3
                    $ \(i3,j3) -> partitionEithers $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
                                $ toList'MAS $ nearbySigmas' (nub $ map pos_i'G [i3,j3]) ham2 -- the minus is because we apply icomm twice
-                  -- remove anticommuting matrices from ham
+    {-# SCC ham3 #-} -- remove anticommuting matrices from ham
     ham3           = flip deleteSigmas'Ham ham2 $ map (fst . snd) _G1
-                  -- [Sigma, Delta]
+    {-# SCC _G_Delta #-} -- [Sigma, Delta]
     _G_Delta       = [(icomm_sorted'Ham (g,1) ham3', c) | (g,c) <- map fst _G1]
                      where ham3' = delete'Ham g3' ham3
-                  -- calc offdiag error
+    {-# SCC offdiag_error #-} -- calc offdiag error
     offdiag_error  = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst)
                    $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
-                  -- remove diagonal matrices from ham
+    {-# SCC ham4 #-} -- remove diagonal matrices from ham
     ham4           = flip deleteSigmas'Ham ham3 $ map fst diag'
-                  -- distribute _G1
+    {-# SCC _G2 #-} -- distribute _G1
     _G2            = map fromJust $ myParListChunk 64
                      [ icomm'GT gL gR
                      | gLRs@((gL,_):_) <- init $ tails _G1,
                        gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
                   -- extract diagonal terms
-    (diag'',_G3)  = partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2
+    (diag'',_G3)  = {-# SCC "diag'',_G3" #-} partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2
                   -- keep only max_rg_terms terms
-    (_G4, trash') = maybe (_G3,[]) (\max_terms -> splitAt max_terms $ sort'GT $ _G3) max_rg_terms
+    (_G4, trash') = {-# SCC "_G4,trash'" #-} maybe (_G3,[]) (\max_terms -> splitAt max_terms $ sort'GT $ _G3) max_rg_terms
     -- TODO allow more terms by reducing to ground state
     
+    {-# SCC rg' #-}
     rg' = rg {ham'RG            = ham4 +# _G4,
               diag'RG           = (+# [diag',diag'']) <$> diag,
               unusedIs'RG       = unusedIs',
@@ -1036,12 +1057,14 @@ ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0
                               x0 <- x0s]
 
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
+{-# SCC regionEE_1d #-}
 regionEE_1d :: Ls -> ([X] -> [Sigma]) -> [(L,X)] -> Double
 regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
   where lsB = ls ++ (bosonicQ ? [2] $ [])
         nB  = product lsB
         lYB = product $ tail lsB
         lxs = map (second $ flip mod $ head ls) lxs_
+        {-# SCC regionStabs #-}
         regionStabs = [sigma g'
                       | g <- map is'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
                         let g' = IntSet.unions $ map (selRegion g . both (*lYB)) lxs,
@@ -1051,6 +1074,7 @@ regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionS
         selRegion g (l,i) = (if i+l<nB then                fst . IntSet.split (i+l)
                                        else IntSet.union $ fst $ IntSet.split (i+l-nB) g)
                           $ snd $ IntSet.split (i-1) g
+        {-# SCC acommMat #-}
         acommMat :: [Sigma] -> IntMap IntSet
         acommMat gs  = foldl' f IntMap.empty gs
           where  gs' = fromList'Ham ls $ map (,1::F) gs
@@ -1061,6 +1085,7 @@ regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionS
                          i0 = hash'G g0
 
 -- stabilizers that may have been cut by [x..x+lx/2-1]
+{-# SCC calcCutStabs #-}
 calcCutStabs :: Ham -> ([X] -> [Sigma])
 calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
   where
@@ -1220,6 +1245,7 @@ fastSumQ = False
 parallelQ :: Bool
 parallelQ = False
 
+{-# SCC main #-}
 main :: IO ()
 main = do
   startTime <- Clock.getTime Clock.Monotonic

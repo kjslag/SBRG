@@ -66,7 +66,7 @@ import qualified Data.Strict as S
 import qualified Control.Monad.Trans.State.Strict as State
 
 import Data.IntSet (IntSet)
-import qualified Data.IntSet as IntSet
+import qualified Data.IntSet.Internal as IntSet
 
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -661,12 +661,59 @@ length'G l = (l-) . maximum . modDifferences l . IntSet.toList . positions'G
 size'G :: Sigma -> Int
 size'G = IntSet.size . positions'G
 
-{-# SCC acommQ #-} 
-acommQ :: Sigma -> Sigma -> Bool
-acommQ g1 g2 = odd $ IntSet.size $ is'G g1 `IntSet.intersection` f (is'G g2)
+
+acommQ_slow :: Sigma -> Sigma -> Bool
+acommQ_slow g1 g2 = odd $ IntSet.size $ is'G g1 `IntSet.intersection` f (is'G g2)
   where f | fermionicQ = id
           | otherwise  = IntSet.map $ \i -> even i ? i+1 $ i-1
--- TODO implement fast version
+
+{-# SCC acommQ #-}
+acommQ :: Sigma -> Sigma -> Bool
+acommQ g1 g2 = -- asserting (== acommQ_slow g1 g2) $
+               intersection'IntSet False xor (\l r -> odd $ popCount $ l .&. flip_ r) (is'G g1) (is'G g2)
+  where flip_ b = fermionicQ ? b $ unsafeShiftL (b .&. 0x5555555555555555) 1 .|. -- 5 = 0101
+                                   unsafeShiftR (b .&. 0xAAAAAAAAAAAAAAAA) 1     -- A = 1010
+
+{-# INLINE intersection'IntSet #-}
+-- modified from https://hackage.haskell.org/package/containers-0.6.1.1/docs/src/Data.IntSet.Internal.html#intersection
+intersection'IntSet :: a -> (a -> a -> a) -> (IntSet.BitMap -> IntSet.BitMap -> a) -> IntSet -> IntSet -> a
+intersection'IntSet x0 f g = intersection
+  where intersection t1@(IntSet.Bin p1 m1 l1 r1) t2@(IntSet.Bin p2 m2 l2 r2)
+          | shorter m1 m2  = intersection1
+          | shorter m2 m1  = intersection2
+          | p1 == p2       = intersection l1 l2 `f` intersection r1 r2
+          | otherwise      = x0
+          where intersection1 | nomatch p2 p1 m1  = x0
+                              | zero p2 m1        = intersection l1 t2
+                              | otherwise         = intersection r1 t2
+                intersection2 | nomatch p1 p2 m2  = x0
+                              | zero p1 m2        = intersection t1 l2
+                              | otherwise         = intersection t1 r2
+        intersection t1@(IntSet.Bin _ _ _ _) (IntSet.Tip kx2 bm2) = intersectBM t1
+          where intersectBM (IntSet.Bin p1 m1 l1 r1) | nomatch kx2 p1 m1 = x0
+                                              | zero kx2 m1       = intersectBM l1
+                                              | otherwise         = intersectBM r1
+                intersectBM (IntSet.Tip kx1 bm1) | kx1 == kx2 = g bm1 bm2
+                                          | otherwise  = x0
+                intersectBM IntSet.Nil = x0
+        intersection (IntSet.Bin _ _ _ _) IntSet.Nil = x0
+        intersection (IntSet.Tip kx1 bm1) t2 = intersectBM t2
+          where intersectBM (IntSet.Bin p2 m2 l2 r2) | nomatch kx1 p2 m2 = x0
+                                              | zero kx1 m2       = intersectBM l2
+                                              | otherwise         = intersectBM r2
+                intersectBM (IntSet.Tip kx2 bm2) | kx1 == kx2 = g bm1 bm2
+                                          | otherwise = x0
+                intersectBM IntSet.Nil = x0
+        intersection IntSet.Nil _ = x0
+        zero = IntSet.zero
+        nomatch i p m = (mask i m) /= p
+        shorter m1 m2 = (natFromInt m1) > (natFromInt m2)
+        mask i m = maskW (natFromInt i) (natFromInt m)
+        maskW i m = intFromNat (i .&. (complement (m-1) `xor` m))
+        natFromInt :: Int -> Word
+        natFromInt i = fromIntegral i
+        intFromNat :: Word -> Int
+        intFromNat w = fromIntegral w
 
 {-# SCC multSigma #-} 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)

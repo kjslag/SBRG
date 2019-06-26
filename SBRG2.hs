@@ -969,37 +969,43 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
     i3_1      = IntSet.toList $ unusedIs `IntSet.intersection` is'G g3
     i3_2      = IntSet.toList $ unusedIs `IntSet.difference`   is'G g3
-    {-# SCC g4s #-}
+    {-# SCC g4s #-} -- if not bifurcationQ, then g3' must only involve ij3
     (ij3,g3',g4s) | fermionicQ = case (i3_1, i3_2) of
                                       ([i3,j3], _) -> (Just (i3,j3), g3, [])
                                       (i3:_, j3:_) -> (Just (i3,j3), simp $ fromList'G [i3,j3], g4s_)
-                                      (_, [])      -> (Nothing     , g3, [])
+                                      (_, [])      -> (Nothing     , g3, []) -- is fermion parity
                                       _            -> error "rgStep ij3"
                   | otherwise  = let j3 = head i3_1
                                      i3 = odd j3 ? j3-1 $ j3+1
                                  in  (Just (i3, j3), simp $ fromList'G [i3], g4s_)
       where g4s_ = [fst $ fromJust $ icomm g3 g3']
-            simp = not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
+            simp = id -- not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
     unusedIs'    = maybe unusedIs `flip` ij3 $ \(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]
-    parity_stab' = (fermionicQ &&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
+    parity_stab' = (fermionicQ&&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
     g4_H0Gs'     = (maybe [] `flip` ij3) (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
     
     {-# SCC isDiag #-}
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = unusedIs' `IntSet.disjoint` is'G g
-                || fermionicQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g -- TODO just look at ground state, and then this simplifies
+                || fermionicQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g
+    
+    {-# SCC projGS #-}
+    projGS :: [SigmaTerm] -> [SigmaTerm]
+    projGS = bifurcationQ ? id $ map projGS_
+      where projGS_ gT@(g,c) = maybe gT (, h3' >= 0 ? c $ -c) $ case ij3 of
+                                 Just (i3,_) -> justIf (i3 `IntSet.member` is'G g) $ sigma $ is'G g IntSet.\\ is'G g3'
+                                 Nothing     -> justIf (is'G g == unusedIs) $ fromList'G []
     
     {-# SCC ham2 #-} -- apply c4 transformation
     ham2           = c4s'Ham 1 g4s ham1
     {-# SCC h3' #-} -- get g3' coefficient
-    h3'            = assert (gc'Ham (c4s'Ham (-1) g4s ham2) == gc'Ham ham1) -- TODO fix
-                   $ fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
+    h3'            = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
                   -- find sigma matrices that overlap with g3'
-                  -- split into diagonal matrices (diag') and anticommuting commutators (_G1)
-    (diag',_G1)    = {-# SCC "diag',_G1" #-}first (filter isDiag)
-                   $ maybe (toList'Ham ham2, []) `flip` ij3
+                  -- split into commuting matrices (_comm) and anticommuting commutators (_G1)
+    (_comm,_G1)    = {-# SCC "diag',_G1" #-} maybe (toList'Ham ham2, []) `flip` ij3
                    $ \(i3,j3) -> partitionEithers $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
                                $ toList'MAS $ nearbySigmas' (nub $ map pos_i'G [i3,j3]) ham2 -- the minus is because we apply icomm twice
+    (diag',offdiag)= partition isDiag _comm
     {-# SCC ham3 #-} -- remove anticommuting matrices from ham
     ham3           = flip deleteSigmas'Ham ham2 $ map (fst . snd) _G1
     {-# SCC _G_Delta #-} -- [Sigma, Delta]
@@ -1008,10 +1014,11 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     {-# SCC offdiag_error #-} -- calc offdiag error
     offdiag_error  = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst)
                    $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
-    {-# SCC ham4 #-} -- remove diagonal matrices from ham
-    ham4           = flip deleteSigmas'Ham ham3 $ map fst diag'
+    {-# SCC ham4 #-} -- remove diagonal matrices from ham and project to ground state if not bifurcationQ
+    ham4           = (bifurcationQ ? id $ (+# projGS offdiag))
+                   $ flip deleteSigmas'Ham ham3 $ map fst $ bifurcationQ ? diag' $ _comm
     {-# SCC _G2 #-} -- distribute _G1
-    _G2            = map fromJust $ myParListChunk 64
+    _G2            = projGS $ map fromJust -- $ myParListChunk 64
                      [ icomm'GT gL gR
                      | gLRs@((gL,_):_) <- init $ tails _G1,
                        gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
@@ -1019,11 +1026,10 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     (diag'',_G3)  = {-# SCC "diag'',_G3" #-} partition isDiag $ h3'==0 ? [] $ (fastSumQ ? id $ Map.toList . fromList'MapGT) _G2
                   -- keep only max_rg_terms terms
     (_G4, trash') = {-# SCC "_G4,trash'" #-} maybe (_G3,[]) (\max_terms -> splitAt max_terms $ sort'GT $ _G3) max_rg_terms
-    -- TODO allow more terms by reducing to ground state
     
     {-# SCC rg' #-}
     rg' = rg {ham'RG            = ham4 +# _G4,
-              diag'RG           = (+# [diag',diag'']) <$> diag,
+              diag'RG           = (+# [projGS diag',diag'']) <$> diag,
               unusedIs'RG       = unusedIs',
               g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
               parity_stab'RG    = parity_stab',
@@ -1234,7 +1240,7 @@ fermionicQ = False
 bosonicQ = not fermionicQ
 
 bifurcationQ :: Bool
-bifurcationQ = True -- TODO implement false
+bifurcationQ = False
 
 prettyPrint :: Bool
 prettyPrint = False
@@ -1294,7 +1300,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190618.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "190626.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1306,6 +1312,7 @@ main = do
 --when calc_aCorr'Q $ do
 --  putStr "max Anderson terms: "; print max_wolff_terms
   putStr   "float type:         "; print type_F
+  putStr   "bifurcationQ:       "; print bifurcationQ
   
   when detailedQ $ do
     putStr "Hamiltonian: "

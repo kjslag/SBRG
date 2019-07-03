@@ -189,13 +189,6 @@ nestedFold2 = NestedFold . nestedFold
 nestedFold3 :: t1 (t2 (t3 (t4 a))) -> NestedFold3 t1 t2 t3 t4 a
 nestedFold3 = NestedFold . nestedFold2
 
-getArgs6 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6) => [String] -> IO (t1,t2,t3,t4,t5,t6)
-getArgs6 defaults = do
-  args <- getArgs
-  let n = 6
-      [x1,x2,x3,x4,x5,x6] = args ++ drop (length defaults + length args - n) defaults
-  return (readNote "1" x1, readNote "2" x2, readNote "3" x3, readNote "4" x4, readNote "5" x5, readNote "6" x6)
-
 getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7) => [String] -> IO (t1,t2,t3,t4,t5,t6,t7)
 getArgs7 defaults = do
   args <- getArgs
@@ -655,7 +648,9 @@ scale'GT x (g,c) = (g,x*c)
 
 {-# SCC length'G #-} 
 length'G :: Int -> Sigma -> Int
-length'G l = (l-) . maximum . modDifferences l . IntSet.toList . positions'G
+length'G l g | null xs   = 0
+             | otherwise = l - maximum (modDifferences l xs)
+  where xs = IntSet.toList $ positions'G g
 
 {-# SCC size'G #-} 
 size'G :: Sigma -> Int
@@ -973,7 +968,9 @@ data RG = RG {
   stab0'RG           :: ![SigmaTerm],      -- stabilizers in new basis
   stab1'RG           :: ![SigmaTerm],      -- stabilizers in current basis
   stab'RG            ::  Ham,              -- stabilizers in old basis
-  max_rg_terms'RG    :: !(Maybe Int)}
+  max_rg_terms'RG    :: !(Maybe Int),
+  bifurcation'RG     :: !Bifurcation,
+  randGen'RG         :: !Random.StdGen}
   deriving (Show)
 
 instance MySeq RG where
@@ -997,15 +994,15 @@ g4s'RG = lefts . g4_H0Gs'RG
 wolff_errors'RG :: RG -> [F]
 wolff_errors'RG = map fst3 . rights . g4_H0Gs'RG
 
-init'RG :: [Int] -> Ham -> RG
-init'RG ls0 ham = rg
+init'RG :: [Int] -> Int -> Ham -> RG
+init'RG ls0 seed ham = rg
   where rg = RG ls0 ham (Just Map.empty) (IntSet.fromDistinctAscList [0..((bosonicQ ? 2 $ 1) * n'Ham ham - 1)])
-             [] False [] (Just []) [] [] (stabilizers rg) Nothing
+             [] False [] (Just []) [] [] (stabilizers rg) Nothing SB (Random.mkStdGen $ hashWithSalt seed "init'RG")
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 {-# SCC rgStep #-}
 rgStep :: RG -> RG
-rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms)
+rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms bifurcation randGen)
   | IntSet.null unusedIs = rg
   | otherwise            = myForce rg'
   where
@@ -1030,18 +1027,24 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     unusedIs'    = maybe unusedIs `flip` ij3 $ \(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]
     parity_stab' = (fermionicQ&&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
     g4_H0Gs'     = (maybe [] `flip` ij3) (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
+    bifurcationQ = bifurcation == SB
     
     {-# SCC isDiag #-}
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = unusedIs' `IntSet.disjoint` is'G g
                 || fermionicQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g
     
-    {-# SCC projGS #-}
-    projGS :: [SigmaTerm] -> [SigmaTerm]
-    projGS = bifurcationQ ? id $ map projGS_
-      where projGS_ gT@(g,c) = maybe gT (, h3' >= 0 ? c $ -c) $ case ij3 of
+    {-# SCC proj #-}
+    proj :: [SigmaTerm] -> [SigmaTerm]
+    proj = bifurcationQ ? id $ map projGS_
+      where projGS_ gT@(g,c) = maybe gT (, (h3' <= 0) == groundStateQ ? c $ -c) $ case ij3 of
                                  Just (i3,_) -> justIf (i3 `IntSet.member` is'G g) $ sigma $ is'G g IntSet.\\ is'G g3'
                                  Nothing     -> justIf (is'G g == unusedIs) $ fromList'G []
+    
+    (groundStateQ, randGen') = case bifurcation of
+                                    SB   -> (undefined, randGen)
+                                    GS -> (True, randGen)
+                                    RS -> Random.random randGen
     
     {-# SCC ham2 #-} -- apply c4 transformation
     ham2           = c4s'Ham 1 g4s ham1
@@ -1062,10 +1065,10 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     offdiag_error  = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst)
                    $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
     {-# SCC ham4 #-} -- remove diagonal matrices from ham and project to ground state if not bifurcationQ
-    ham4           = (bifurcationQ ? id $ (+# projGS offdiag))
+    ham4           = (bifurcationQ ? id $ (+# proj offdiag))
                    $ flip deleteSigmas'Ham ham3 $ map fst $ bifurcationQ ? diag' $ _comm
     {-# SCC _G2 #-} -- distribute _G1
-    _G2            = projGS $ map fromJust -- $ myParListChunk 64
+    _G2            = proj $ map fromJust -- $ myParListChunk 64
                      [ icomm'GT gL gR
                      | gLRs@((gL,_):_) <- init $ tails _G1,
                        gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
@@ -1076,7 +1079,7 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     
     {-# SCC rg' #-}
     rg' = rg {ham'RG            = ham4 +# _G4,
-              diag'RG           = (+# [projGS diag',diag'']) <$> diag,
+              diag'RG           = (+# [proj diag',diag'']) <$> diag,
               unusedIs'RG       = unusedIs',
               g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
               parity_stab'RG    = parity_stab',
@@ -1084,7 +1087,8 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
               trash'RG          = (trash':) <$> trash,
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
-              stab'RG           = stabilizers rg'}
+              stab'RG           = stabilizers rg',
+              randGen'RG        = randGen'}
 
 stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
@@ -1282,8 +1286,8 @@ fermionicQ = False
 #endif
 bosonicQ = not fermionicQ
 
-bifurcationQ :: Bool
-bifurcationQ = False
+data Bifurcation = SB | GS | RS
+  deriving (Eq, Show, Read)
 
 prettyPrint :: Bool
 prettyPrint = False
@@ -1305,15 +1309,15 @@ main = do
   
   args <- getArgs
   when (length args < 5) $ do
-    putStrLn $ "usage: SBRG random-seed model [" ++ if' small_lsQ "" "ln2 " ++ "system lengths] [coupling constants] gamma"
+    putStrLn $ "usage: SBRG random-seed model bifurcation [" ++ if' small_lsQ "" "ln2 " ++ "system lengths] [coupling constants] gamma"
             ++ " {max RG terms = " ++ max_rg_terms_default ++ "}" -- {max wolff terms = " ++ max_wolff_terms_default ++ "}"
     putStr   $ "available models: "
     print    $ enumFrom $ (toEnum 0 :: Model)
-    putStrLn $ "example: SBRG 0 Ising [6] [1,1,1] 1"
+    putStrLn $ "example: SBRG 0 Ising SB [6] [1,1,1] 1"
     exitFailure
   
-  (seed,model,ln2_ls,couplings,gamma,max_rg_terms_) <- getArgs6 [max_rg_terms_default]
-    :: IO (Int, Model, [Int], [F], Double, Int)
+  (seed,model,bifurcation,ln2_ls,couplings,gamma,max_rg_terms_) <- getArgs7 [max_rg_terms_default]
+    :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int)
   
 --   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
 --     :: IO (Int, Model, [Int], [F], Double, Int, Int)
@@ -1325,7 +1329,8 @@ main = do
     --calc_aCorr'Q   = False
       detailedQ      = False
       cut_powQ       = True
-      keep_diagQ     = False
+      bifurcationQ   = bifurcation == SB
+      keep_diagQ     = not bifurcationQ
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
     --max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1335,15 +1340,16 @@ main = do
       n        = n'RG rg0
       l_1d     = dim == 1 ? Just n $ Nothing
       seed'    = not alterSeedQ ? hash seed $ hash $ show (seed, model, ln2_ls, couplings, gamma)
-      rg0      = init'RG ls0 $ init_generic'Ham seed' $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
+      rg0      = init'RG ls0 seed' $ init_generic'Ham seed' $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
+                               bifurcation'RG     = bifurcation,
                                max_rg_terms'RG    = max_rg_terms }
       xs_      = (small_lsQ ? id $ filter isPow2) [1..head ls//2]
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "2.190626.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "2.190702.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1355,7 +1361,7 @@ main = do
 --when calc_aCorr'Q $ do
 --  putStr "max Anderson terms: "; print max_wolff_terms
   putStr   "float type:         "; print type_F
-  putStr   "bifurcationQ:       "; print bifurcationQ
+  putStr   "bifurcation:        "; print $ show bifurcation
   
   when detailedQ $ do
     putStr "Hamiltonian: "
@@ -1380,6 +1386,11 @@ main = do
   
   putStr "stabilizer sizes: "
   print $ cut_pow2 $ map (size'G . fst) $ ordered_stab
+  
+  when (not bifurcationQ) $ do
+    let ([],energy) = toList'GT $ the $ Map.toList $ fromJust $ diag'RG rg
+    putStr "energy: "
+    print $ energy
   
   when detailedQ $ do
     putStr "stabilizers: "

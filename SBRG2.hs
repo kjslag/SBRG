@@ -1236,6 +1236,10 @@ model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB 
 model_gen MajChainF ls [j1,j2] = basic_genF ls gen
   where gen [x] (rj:rs) = ([ ([[x],[x+1]], rj*(even x ? j1 $ j2)) ], rs)
         gen _ _ = error "MajChainF"
+model_gen MajSquareF ls [ly_] = basic_genF (ls++[ly]) gen
+  where ly = round $ toDouble ly_
+        gen [x,y] (r:rs) = ([ ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], r) ], rs)
+        gen _ _ = error "MajSquareF"
 #endif
 model_gen _ _ _ = error "model_gen"
 

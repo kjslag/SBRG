@@ -21,7 +21,7 @@
 -- default:
 #ifndef FERMIONIC
 #ifndef BOSONIC
-#define BOSONIC
+#define FERMIONIC
 #endif
 #endif
 
@@ -1094,9 +1094,7 @@ stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
 
 runRG :: RG -> RG
-runRG = until done rgStep
-  where done rg | fermionicQ = parity_stab'RG rg && ((==2) $ IntSet.size $ unusedIs'RG rg)
-                | otherwise  = IntSet.null $ unusedIs'RG rg
+runRG = until (IntSet.null . unusedIs'RG) rgStep
 
 -- return: RMS of <g> over all eigenstates
 -- Ham: the stabilizer Ham
@@ -1193,7 +1191,7 @@ data Model =
 #ifdef BOSONIC
   Ising | XYZ | MajSquare | MajSquareOpen
 #else
-  MajSquareF
+  MajChainF | MajSquareF
 #endif
   deriving (Eq, Show, Read, Enum)
 
@@ -1210,12 +1208,11 @@ basic_genB ls gen = (ls, (\(gs,rs) -> ([fromListB'GT (map (first $ pos_xs ls) g,
 model_gen :: Model -> Ls -> Rands -> (Ls,ModelGen)
 #ifdef BOSONIC
 model_gen Ising ls [j,k,h] = basic_genB ls gen
-  where (kj,kh) = (3,1)
-        gen [x] (rj:rk:rh:rs) =
-          ([ ([([x],kj),([x+1],kj)],j*rj), ([([x],kh),([x+1],kh)],k*rk), ([([x],kh)],h*rh) ], rs)
+  where gen [x] (rj:rk:rh:rs) =
+          ([ ([([x],3),([x+1],3)],j*rj), ([([x],1),([x+1],1)],k*rk), ([([x],1)],h*rh) ], rs)
         gen [x,y] (rjx:rjy:rkx:rky:rh:rs) =
-          ([ ([([x,y],kj),([x+1,y  ],kj)],j*rjx), ([([x,y],kh),([x+1,y  ],kh)],k*rkx), ([([x,y],kh)],h*rh),
-             ([([x,y],kj),([x  ,y+1],kj)],j*rjy), ([([x,y],kh),([x  ,y+1],kh)],k*rky) ], rs)
+          ([ ([([x,y],3),([x+1,y  ],3)],j*rjx), ([([x,y],1),([x+1,y  ],1)],k*rkx), ([([x,y],1)],h*rh),
+             ([([x,y],3),([x  ,y+1],3)],j*rjy), ([([x,y],1),([x  ,y+1],1)],k*rky) ], rs)
         gen _ _ = error "Ising"
 model_gen XYZ ls j = basic_genB ls gen
   where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
@@ -1235,6 +1232,10 @@ model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB 
           where (rs,rs') = splitAt (ly-oQ) rs0
         gen [_,_] rs = ([], rs)
         gen _ _ = error "MajSquare"
+#else
+model_gen MajChainF ls [j1,j2] = basic_genF ls gen
+  where gen [x] (rj:rs) = ([ ([[x],[x+1]], rj*(even x ? j1 $ j2)) ], rs)
+        gen _ _ = error "MajChainF"
 #endif
 model_gen _ _ _ = error "model_gen"
 
@@ -1313,10 +1314,10 @@ main = do
             ++ " {max RG terms = " ++ max_rg_terms_default ++ "}" -- {max wolff terms = " ++ max_wolff_terms_default ++ "}"
     putStr   $ "available models: "
     print    $ enumFrom $ (toEnum 0 :: Model)
-    putStrLn $ "example: SBRG 0 Ising SB [6] [1,1,1] 1"
+    putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1]")
     exitFailure
   
-  (seed,model,bifurcation,ln2_ls,couplings,gamma,max_rg_terms_) <- getArgs7 [max_rg_terms_default]
+  (seed,model,bifurcation,ln2_ls,couplings,gamma,max_rg_terms_) <- getArgs7 ["1", max_rg_terms_default]
     :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int)
   
 --   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
@@ -1349,7 +1350,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "2.190702.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "2.190703.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0

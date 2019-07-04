@@ -713,29 +713,30 @@ intersection'IntSet x0 f g = intersection
 {-# SCC multSigma #-} 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
 multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, g_)
-                                      | otherwise = (sF - sf gF, sigma gF) -- TODO second part is just an xor
+                                      | otherwise = (sF + sf g1_ + sf g2_ - sf (is'G g_), g_)
   where g_ = {-# SCC "g_" #-} sigma $ xor'IntSet g1_ g2_
+        
         sB = {-# SCC "sB" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
           where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
                 flip_ i = even i ? i+1 $ i-1
         -- TODO speed up
         
-        (sF,gF) = second IntSet.fromAscList $ f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) (sf g1_ + sf g2_, [])
+        sF = f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
         sf g = case IntSet.size g `mod` 4 of
                     0 -> 0
                     2 -> 1
                     _ -> error "multSigma"
-        f :: Int -> [Int] -> [Int] -> (Int,[Int]) -> (Int,[Int])
-        f n1 (i1:g1) (i2:g2) (s,g') | i1 < i2   = f (n1-1)     g1  (i2:g2) (s  ,i1:g')
-                                    | i1 > i2   = f  n1    (i1:g1)     g2  (s' ,i2:g')
-                                    | otherwise = f (n1-1)     g1      g2  (s'',   g')
+        f :: Int -> [Int] -> [Int] -> Int -> Int
+        f n1 (i1:g1) (i2:g2) s | i1 < i2   = f (n1-1)     g1  (i2:g2) s
+                               | i1 > i2   = f  n1    (i1:g1)     g2  s'
+                               | otherwise = f (n1-1)     g1      g2  s''
           where s'  = s + 2 * boole (odd   n1)
                 s'' = s + 2 * boole (odd $ n1 - 1)
-        f _ g1 g2 (s,g') = (s, g1++g2++g')
+        f _ _ _ s = s
 
 -- i [a,b]/2
 icomm :: Sigma -> Sigma -> Maybe SigmaTerm
-icomm g1 g2 = case mod s 4 of
+icomm g1 g2 = case s `mod` 4 of
                    0 -> Nothing
                    2 -> Nothing
                    1 -> Just (g,-1)
@@ -745,7 +746,7 @@ icomm g1 g2 = case mod s 4 of
 
 -- {a,b}/2
 acomm :: Sigma -> Sigma -> Maybe SigmaTerm
-acomm g1 g2 = case mod s 4 of
+acomm g1 g2 = case s `mod` 4 of
                    0 -> Just (g, 1)
                    2 -> Just (g,-1)
                    1 -> Nothing
@@ -808,7 +809,9 @@ data Ham = Ham {
   nlcgs'Ham :: !MapAbsSigmas,          -- |coefficient| -> non-local sigma matrices
   icgs'Ham  :: !(IntMap MapAbsSigmas), -- local sigmas: site index (/2 if bosonicQ) -> |coefficient| -> local sigma matrices
   ls'Ham    :: !Ls }                   -- system lengths
-  deriving (Show)
+
+instance Show Ham where
+  show = show . Map.toList . gc'Ham
 
 n'Ham :: Ham -> Int
 n'Ham = product . ls'Ham
@@ -1333,9 +1336,9 @@ main = do
     --calc_aCorrQ    = False
     --calc_aCorr'Q   = False
       detailedQ      = False
-      cut_powQ       = True
+      cut_powQ       = not detailedQ
       bifurcationQ   = bifurcation == SB
-      keep_diagQ     = not bifurcationQ
+      keep_diagQ     = not bifurcationQ || detailedQ
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
     --max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1354,7 +1357,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "2.190703.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190704.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1409,7 +1412,7 @@ main = do
     
     case diag'RG rg of
       Just diag -> do putStr "effective Hamiltonian: "
-                      print $ diag
+                      print $ Map.toList $ diag
       _         -> return ()
   
   putStr "small stabilizers: "

@@ -1363,7 +1363,8 @@ main = do
                                trash'RG           = Nothing,
                                bifurcation'RG     = bifurcation,
                                max_rg_terms'RG    = max_rg_terms }
-      xs_      = (small_lsQ ? id $ filter isPow2) [1..head ls//2]
+      xs_pow2  = filter isPow2 [1..head ls//2]
+      xs_      = small_lsQ   ? [1..head ls//2] $ xs_pow2
   
   unless (0 < n) $ undefined
   
@@ -1371,7 +1372,7 @@ main = do
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
-  putStr   "couplings:          "; print $ (read $ args!!3 :: [Double]) -- print couplings
+  putStr   "couplings:          "; print $ (read $ args!!4 :: [Double]) -- print couplings
   putStr   "Γ:                  "; print gamma
   putStr   "seed:               "; print seed
   putStr   "seed':              "; print seed'
@@ -1459,7 +1460,8 @@ main = do
   
   when calc_EEQ $ do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
-        entanglement_data = ee1d_ ls cutStabs xs_ (small_lsQ ? [0] $ 0:xs_)
+        entanglement_data = ee1d_ ls cutStabs xs_     (small_lsQ ? [0] $ 0:xs_)
+            ++ (small_lsQ ? ee1d_ ls cutStabs xs_pow2 xs_ $ [])
         entanglement_map = Map.fromListWith undefined $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
         lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in

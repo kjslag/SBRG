@@ -621,7 +621,7 @@ toList'GT :: SigmaTerm -> ([Index],F)
 toList'GT = first toList'G
 
 fromList'G :: [Index] -> Sigma
-fromList'G = asserting check'G . sigma . IntSet.fromList
+fromList'G is = asserting check'G . sigma . asserting ((== length is) . IntSet.size) $ IntSet.fromList is
 
 fromListB'G :: [(Pos,Int)] -> Sigma
 fromListB'G = assert bosonicQ fromList'G . concat . map f
@@ -631,8 +631,16 @@ fromListB'G = assert bosonicQ fromList'G . concat . map f
                             3 -> [2*i, 2*i+1]
                             _ -> error "fromListB'G"
 
-fromList'GT :: ([Pos],F) -> SigmaTerm
-fromList'GT = first fromList'G
+fromList'GT :: ([Index],F) -> SigmaTerm
+fromList'GT (is,c) = (fromList'G is, fermionicQ && odd (sF is) ? -c $ c)
+  where sF :: [Int] -> Int
+        sF (x0:xs0) = go ([],0) ([],0) xs0 0
+           where go :: ([Int],Int) -> ([Int],Int) -> [Int] -> Int -> Int
+                 go (ls,nl) (rs,nr) (x:xs) s | x < x0    = go (x:ls, nl+1) (  rs, nr  ) xs $ s + nl + 1 + nr
+                                             | x > x0    = go (  ls, nl  ) (x:rs, nr+1) xs $ s + nr
+                                             | otherwise = error "fromList'GT"
+                 go (ls, _) (rs, _) [] s = s + sF ls + sF rs
+        sF [] = 0
 
 fromListB'GT :: ([(Int,Int)],F) -> SigmaTerm
 fromListB'GT = first fromListB'G
@@ -832,9 +840,6 @@ toDescList'Ham ham = toSortedList'MASs [lcgs'Ham ham, nlcgs'Ham ham]
 
 fromList'Ham :: Ls -> [SigmaTerm] -> Ham
 fromList'Ham ls = (zero'Ham ls +#)
-
-fromLists'Ham :: Ls -> [([Index],F)] -> Ham
-fromLists'Ham ls = fromList'Ham ls . map fromList'GT
 
 null'Ham :: Ham -> Bool
 null'Ham = Map.null . gc'Ham
@@ -1071,7 +1076,7 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     ham4           = (bifurcationQ ? id $ (+# proj offdiag))
                    $ flip deleteSigmas'Ham ham3 $ map fst $ bifurcationQ ? diag' $ _comm
     {-# SCC _G2 #-} -- distribute _G1
-    _G2            = proj $ map fromJust -- $ myParListChunk 64
+    _G2            = proj $ catMaybes -- $ myParListChunk 64
                      [ icomm'GT gL gR
                      | gLRs@((gL,_):_) <- init $ tails _G1,
                        gR <- mapHead (scale'GT 0.5) $ map snd gLRs ]
@@ -1208,7 +1213,7 @@ basic_genB :: Ls -> (Xs -> Rands -> ([RawSigmaTermB], Rands)) -> ([Int],ModelGen
 basic_genB ls gen = (ls, (\(gs,rs) -> ([fromListB'GT (map (first $ pos_xs ls) g,c) | (g,c) <- gs], rs)) .* gen)
 #endif
 
-model_gen :: Model -> Ls -> Rands -> (Ls,ModelGen)
+model_gen :: Model -> Ls -> [F] -> (Ls,ModelGen)
 #ifdef BOSONIC
 model_gen Ising ls [j,k,h] = basic_genB ls gen
   where gen [x] (rj:rk:rh:rs) =
@@ -1217,7 +1222,7 @@ model_gen Ising ls [j,k,h] = basic_genB ls gen
           ([ ([([x,y],3),([x+1,y  ],3)],j*rjx), ([([x,y],1),([x+1,y  ],1)],k*rkx), ([([x,y],1)],h*rh),
              ([([x,y],3),([x  ,y+1],3)],j*rjy), ([([x,y],1),([x  ,y+1],1)],k*rky) ], rs)
         gen _ _ = error "Ising"
-model_gen XYZ ls j = basic_genB ls gen
+model_gen XYZ ls j | length j == 3 = basic_genB ls gen
   where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
           ([ ([([x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3] ], rs)
         gen _ _ = error "XYZ"
@@ -1236,12 +1241,13 @@ model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB 
         gen [_,_] rs = ([], rs)
         gen _ _ = error "MajSquare"
 #else
-model_gen MajChainF ls [j1,j2] = basic_genF ls gen
-  where gen [x] (rj:rs) = ([ ([[x],[x+1]], rj*(even x ? j1 $ j2)) ], rs)
+model_gen MajChainF ls [j1,j2,k] = basic_genF ls gen
+  where gen [x] (rj:rk:rs) = ([ ([[x],[x+1]], (even x ? j1 $ j2)*rj), ([[x],[x+1],[x+2],[x+3]], k*rk) ], rs)
         gen _ _ = error "MajChainF"
-model_gen MajSquareF ls [ly_] = basic_genF (ls++[ly]) gen
+model_gen MajSquareF ls [ly_]     = model_gen MajSquareF ls [ly_,1,0]
+model_gen MajSquareF ls [ly_,q,t] = basic_genF (ls++[ly]) gen
   where ly = round $ toDouble ly_
-        gen [x,y] (r:rs) = ([ ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], r) ], rs)
+        gen [x,y] (rq:rt1:rt2:rs) = ([ ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq), ([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], t*rt2) ], rs)
         gen _ _ = error "MajSquareF"
 #endif
 model_gen _ _ _ = error "model_gen"
@@ -1321,7 +1327,7 @@ main = do
             ++ " {max RG terms = " ++ max_rg_terms_default ++ "}" -- {max wolff terms = " ++ max_wolff_terms_default ++ "}"
     putStr   $ "available models: "
     print    $ enumFrom $ (toEnum 0 :: Model)
-    putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1]")
+    putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1,1]")
     exitFailure
   
   (seed,model,bifurcation,ln2_ls,couplings,gamma,max_rg_terms_) <- getArgs7 ["1", max_rg_terms_default]

@@ -33,6 +33,7 @@ import Control.Monad
 import Data.Bifunctor
 import Data.Bits
 import Data.Coerce
+import Data.Containers.ListUtils
 import Data.Either
 import Data.Function
 import Data.Foldable
@@ -216,12 +217,6 @@ minimumOn f xs = snd $ minimumBy (comparing fst) $ map (\x -> (f x, x)) xs
 
 maximumOn :: Ord b => (a -> b) -> [a] -> a
 maximumOn f xs = snd $ maximumBy (comparing fst) $ map (\x -> (f x, x)) xs
-
-intUnion :: [Int] -> [Int]
-intUnion = IntSet.toList . IntSet.fromList
-
-unions :: Eq a => [[a]] -> [a]
-unions = foldl' union []
 
 xor'IntSet :: IntSet -> IntSet -> IntSet
 xor'IntSet x y = IntSet.union x y `IntSet.difference` IntSet.intersection x y
@@ -1122,7 +1117,7 @@ ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
 {-# SCC regionEE_1d #-}
 regionEE_1d :: Ls -> ([X] -> [Sigma]) -> [(L,X)] -> Double
-regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
+regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
   where lsB = ls ++ (bosonicQ ? [2] $ [])
         nB  = product lsB
         lYB = product $ tail lsB
@@ -1139,11 +1134,20 @@ regionEE_1d ls cutStabs lxs_ = (0.5*) $ fromIntegral $ rankZ2 $ acommMat regionS
                           $ snd $ IntSet.split (i-1) g
         {-# SCC acommMat #-}
         acommMat :: [Sigma] -> IntMap IntSet
-        acommMat gs = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip [0..] gs, g2 <- gs'] IntMap.empty
-          where add i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
-                f ((i,gi), (j,gj)) = acommQ gi gj ? add i j . add j i $ id
+        acommMat gs = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip3 [1..] gs $ map size'G gs, g2 <- bosonicQ ? gs' $ g1:gs'] IntMap.empty
+          where add    i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
+                addSym i j = add i j . add j i
+                addF   i j = addSym i j . addSym (-i) (-j)
+                f ((i,gi,ni), (j,gj,nj)) | bosonicQ  = acomm0 ? addSym i j $ id
+                                         | otherwise = (bothOdd ? addF i (-j) $ id) . (i /= j && (bothOdd `xor` acomm0) ? addF i j $ id)
+                  where acomm0  = acommQ gi gj -- for fermionic, true if odd # of overlapping majorana
+                        bothOdd = odd ni && odd nj
 
--- stabilizers that may have been cut by [x..x+lx/2-1]
+-- test = regionEE_1d ls cutStabs [(2,1)]
+--   where cutStabs = calcCutStabs $ fromList'Ham ls $ map fromList'GT [([0,1],1), ([0,1,2,3],1)]
+--         ls = [4]
+
+-- stabilizers that may have been cut by [x..x+lx/2-1] for any x in xs
 {-# SCC calcCutStabs #-}
 calcCutStabs :: Ham -> ([X] -> [Sigma])
 calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
@@ -1151,18 +1155,18 @@ calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
     ls     = ls'Ham stab
     lx     = head ls
     lx_2   = lx // 2
-    modx   = flip mod lx
-    modx_2 = flip mod lx_2
+    modx   = (`mod` lx)
+    modx_2 = (`mod` lx_2)
     
     localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) $ nub $ map modx_2 xs
-    x_i = head . xs_i'G ls
     localStabs, nonlocalStabs :: [Sigma]
     [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
-    -- local stabilizers cut by [x..x+lx/2-1] where 0 <= i < lx/2 due to symmetry
+    -- local stabilizers cut by [x..x+lx/2-1] where 0 <= x < lx/2 due to symmetry
     cutStabs0 :: IntMap (Set Sigma)
     cutStabs0 = IntMap.fromListWith Set.union $ concatMap f localStabs
     f :: Sigma -> [(Int,Set Sigma)]
-    f g = map (,Set.singleton g) $ cutRegions $ intUnion $ map x_i $ toList'G g
+    f g = map (,Set.singleton g) $ cutRegions $ nubInt $ map x_i $ toList'G g
+      where x_i = head . xs_i'G ls
     cutRegions :: [Int] -> [Int]
     cutRegions xs = concatMap region0 $ zipExact xs (rotateLeft 1 xs)
     region0 (x,x') | dx <= lx_2 = map modx_2 [x+1 .. x+dx]
@@ -1363,7 +1367,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190704.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190705.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0

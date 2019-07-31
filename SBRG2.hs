@@ -1,14 +1,13 @@
 -- author: Kevin Slagle
 -- github.com/kjslag/SBRG
 
--- SBRG2.hs uses Majorana fermions while SBRG.hs uses spins
+-- cabal --enable-profiling install  clock hashable ieee754 NumInstances random safe  bitwise
+-- optional: parallel
 
--- stack --profile install hashable NumInstances ieee754 safe clock parallel random strict
-
-{-# LANGUAGE CPP, TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances, GeneralizedNewtypeDeriving, DeriveFunctor, DeriveFoldable #-} -- OverloadedLists
+{-# LANGUAGE CPP, TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances #-} -- OverloadedLists
 -- :set -XTupleSections
 
-{-# OPTIONS_GHC -Wall -Wno-unused-top-binds -Wno-unused-imports -Wno-orphans -O #-} -- -fllvm -fexcess-precision -optc-ffast-math -optc-O3
+{-# OPTIONS_GHC -Wall -Wno-unused-top-binds -Wno-unused-imports -O #-} --  -fllvm -fexcess-precision -optc-ffast-math -optc-O3
 -- -rtsopts -prof -fprof-auto        -ddump-simpl -threaded
 -- +RTS -xc -s -p                    -N4
 -- +RTS -hy && hp2ps -c SBRG2p.hp && okular SBRG2p.ps
@@ -25,14 +24,15 @@
 #endif
 #endif
 
-import GHC.Exts (groupWith, sortWith, the)
+-- #define PARALLEL
 
-import Control.Applicative
+import GHC.Exts (sortWith, the)
+
 -- import Control.Exception.Base (assert)
 import Control.Monad
+import Control.Monad.ST
 import Data.Bifunctor
 import Data.Bits
-import Data.Coerce
 import Data.Containers.ListUtils
 import Data.Either
 import Data.Function
@@ -40,28 +40,24 @@ import Data.Foldable
 import Data.Hashable
 import Data.List
 import Data.Maybe
-import Data.Monoid
 import Data.NumInstances.Tuple
 import Data.Ord
-import Data.Tuple
-import Debug.Trace
 import Numeric.IEEE (nan, infinity, succIEEE, predIEEE)
 import Safe
 import Safe.Exact
 import System.Environment
-import System.Exit (exitSuccess, exitFailure)
+import System.Exit (exitFailure)
 
 import qualified System.CPUTime as CPUTime
 import qualified System.Clock as Clock
-import qualified GHC.Stats as GHC
+--import qualified GHC.Stats as GHC
 
+#ifdef PARALLEL
 import qualified Control.Parallel as Parallel
 import qualified Control.Parallel.Strategies as Parallel
+#endif
 
 import qualified System.Random as Random
-
-import Data.Strict (Pair(..))
-import qualified Data.Strict as S
 
 --import Control.Monad.Trans.State.Strict (State)
 import qualified Control.Monad.Trans.State.Strict as State
@@ -76,8 +72,12 @@ import Data.IntMap.Strict (IntMap)
 import qualified Data.IntMap.Strict as IntMap hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
 
 import Data.Map.Strict (Map)
-import qualified Data.Map.Strict as  Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
-import qualified Data.Map.Lazy   as LMap hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey)
+import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
+
+import qualified Data.Array as Array
+
+import Data.Array.BitArray.ST (STBitArray)
+import qualified Data.Array.BitArray.ST as BitArray
 
 -- import Data.Vector.Unboxed (Vector)
 -- import qualified Data.Vector.Unboxed as Vector
@@ -121,14 +121,6 @@ infixr 9 .**
 (.**) :: (d -> d') -> (a -> b -> c -> d) -> a -> b -> c -> d'
 f .** g = \x y z -> f $ g x y z
 
--- fromLeft :: Either a b -> a
--- fromLeft (Left x) = x
--- fromLeft _        = undefined
-
--- fromRight :: Either a b -> b
--- fromRight (Right y) = y
--- fromRight _         = undefined
-
 infixl 7 //
 (//) :: Integral a => a -> a -> a
 x // y | (q,0) <- divMod x y = q
@@ -168,27 +160,11 @@ mapHead _ _      = undefined
 foldl'_ :: Foldable t => (a -> b -> b) -> t a -> b -> b
 foldl'_ = flip . foldl' . flip
 
-partitions :: Int -> [a] -> [[a]]
-partitions _ [] = []
-partitions n xs = uncurry (:) $ second (partitions n) $ splitAtExact n xs
-
 newtype NestedFold t1 t2 a = NestedFold { getNestedFold :: t1 (t2 a) }
 
 instance (Foldable t1, Foldable t2) => Foldable (NestedFold t1 t2) where
   foldr  f x = foldr  (flip $ foldr  f) x . getNestedFold
   foldl' f x = foldl' (       foldl' f) x . getNestedFold
-
-type NestedFold2 t1 t2 t3    a = NestedFold (NestedFold t1 t2) t3 a
-type NestedFold3 t1 t2 t3 t4 a = NestedFold (NestedFold (NestedFold t1 t2) t3) t4 a
-
-nestedFold :: t1 (t2 a) -> NestedFold t1 t2 a
-nestedFold  = NestedFold
-
-nestedFold2 :: t1 (t2 (t3 a)) -> NestedFold2 t1 t2 t3 a
-nestedFold2 = NestedFold . nestedFold
-
-nestedFold3 :: t1 (t2 (t3 (t4 a))) -> NestedFold3 t1 t2 t3 t4 a
-nestedFold3 = NestedFold . nestedFold2
 
 getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7) => [String] -> IO (t1,t2,t3,t4,t5,t6,t7)
 getArgs7 defaults = do
@@ -201,10 +177,6 @@ infixl 1 `applyIf`
 applyIf :: (a -> a) -> (a -> Bool) -> a -> a
 applyIf f q x = if' (q x) f id $ x
 
-nest :: Int -> (a -> a) -> a -> a
-nest 0 _ = id
-nest n f = nest (n-1) f . f
-
 justIf :: Bool -> a -> Maybe a
 justIf True  = Just
 justIf False = const Nothing
@@ -212,12 +184,7 @@ justIf False = const Nothing
 justIf' :: (a -> Bool) -> a -> Maybe a
 justIf' f x = justIf (f x) x
 
-minimumOn :: Ord b => (a -> b) -> [a] -> a
-minimumOn f xs = snd $ minimumBy (comparing fst) $ map (\x -> (f x, x)) xs
-
-maximumOn :: Ord b => (a -> b) -> [a] -> a
-maximumOn f xs = snd $ maximumBy (comparing fst) $ map (\x -> (f x, x)) xs
-
+{-# SCC xor'IntSet #-}
 xor'IntSet :: IntSet -> IntSet -> IntSet
 xor'IntSet x y = IntSet.union x y `IntSet.difference` IntSet.intersection x y
 
@@ -299,6 +266,7 @@ modDifferences l is = (head is + l - last is) : zipWith (-) (tail is) is
 modDist :: Int -> Int -> Int
 modDist l x = abs $ mod (x+l//2) l - l//2
 
+#ifdef PARALLEL
 myParListChunk :: MySeq a => Int -> [a] -> [a]
 myParListChunk n | parallelQ = Parallel.withStrategy $ Parallel.parListChunk n $ Parallel.rseq . myForce
                  | otherwise = id
@@ -306,6 +274,7 @@ myParListChunk n | parallelQ = Parallel.withStrategy $ Parallel.parListChunk n $
 par, pseq :: a -> b -> b
 par  = parallelQ ? Parallel.par  $ flip const
 pseq = parallelQ ? Parallel.pseq $ flip const
+#endif
 
 -- Force
 
@@ -453,19 +422,21 @@ instance Floating LogFloat where
 instance Hashable LogFloat where
   hashWithSalt n (LogFloat s y) = hashWithSalt n (s,y)
 
--- Z2Matrix
+-- sparse Z2Matrix
 
 data Z2Mat = Z2Mat (IntMap IntSet) (IntMap IntSet)
 
 fromSymmetric'Z2Mat :: IntMap IntSet -> Z2Mat
 fromSymmetric'Z2Mat mat = Z2Mat mat mat
 
+{-# SCC popRow'Z2Mat #-}
 popRow'Z2Mat :: Z2Mat -> Maybe (IntSet, Z2Mat)
 popRow'Z2Mat (Z2Mat rows cols) = case IntMap.minViewWithKey rows of
     Nothing               -> Nothing
     Just ((i,row), rows') -> let cols' = IntSet.foldl' (flip $ IntMap.alter $ justIf' (not . IntSet.null) . IntSet.delete i . fromJust) cols row
                              in Just (row, Z2Mat rows' cols')
 
+{-# SCC xorRow'Z2Mat #-}
 xorRow'Z2Mat :: IntSet -> Int -> Z2Mat -> Z2Mat
 xorRow'Z2Mat row i (Z2Mat rows cols) = Z2Mat rows' cols'
   where rows'     = IntMap.alter (xorMay row . fromJust) i rows
@@ -473,11 +444,13 @@ xorRow'Z2Mat row i (Z2Mat rows cols) = Z2Mat rows' cols'
         i0        = IntSet.singleton i
         xorMay    = justIf' (not . IntSet.null) .* xor'IntSet
 
--- rankZ2
+-- sparse rankZ2
 
-{-# SCC rankZ2 #-}
-rankZ2 :: IntMap IntSet -> Int
-rankZ2 = go 0 . fromSymmetric'Z2Mat
+{-# SCC sparse_rankZ2 #-}
+sparse_rankZ2 :: IntMap IntSet -> Int
+sparse_rankZ2 = go 0 . fromSymmetric'Z2Mat
+-- rankZ2 m0 = traceShow m0 $ traceShow (IntMap.size m0, fst $ IntMap.findMax m0, meanError $ map (fromIntegral . IntSet.size) $ IntMap.elems m0) $ go 0 $ fromSymmetric'Z2Mat m0
+-- rankZ2 m0 = (IntMap.size m0 > 50 ?? let x=fst $ IntMap.findMax m0 in traceShow [[boole $ IntSet.member j (IntMap.findWithDefault IntSet.empty i m0) | j <- [-x .. x]] | i <- [-x .. x]]) $ go 0 $ fromSymmetric'Z2Mat m0
   where
     go :: Int -> Z2Mat -> Int
     go !n mat_ = case popRow'Z2Mat mat_ of
@@ -488,27 +461,32 @@ rankZ2 = go 0 . fromSymmetric'Z2Mat
                     Nothing -> mat
                     Just is -> IntSet.foldl' (flip $ xorRow'Z2Mat row) mat is
 
-rankZ2' :: [[Bool]] -> Int
-rankZ2' = rankZ2 . IntMap.fromListWith undefined . zip [0..] . map (IntSet.fromList . map fst . filter snd . zip [0..])
+-- dense rankZ2
 
-boolsToInteger :: [Bool] -> Integer
-boolsToInteger = foldl' (\x b -> 2*x + boole b) 0
+-- {-# SCC dense_rankZ2'Integer #-}
+-- dense_rankZ2'Integer :: [Integer] -> Int
+-- dense_rankZ2'Integer = go 0
+--   where go :: Int -> [Integer] -> Int
+--         go  n []         = n
+--         go  n (0:rows)   = go n rows
+--         go !n (row:rows) = go (n+1) $ map (xor row `applyIf` flip testBit j) rows
+--           where j = head $ filter (testBit row) [0..]
 
-symmeterize_rankZ2_old :: [[Bool]] -> Int
-symmeterize_rankZ2_old mat = rankZ2_old' $ (zipWithExact (+) `on` map boolsToInteger) mat (transpose mat)
+{-# SCC dense_rankZ2 #-}
+dense_rankZ2 :: [STBitArray s Int] -> ST s Int
+dense_rankZ2 = go 0
+  where go :: Int -> [STBitArray s Int] -> ST s Int
+        go  n []          = return n
+        go !n (row0:rows) = maybe (go n rows) f =<< BitArray.elemIndex True row0
+          where f j = go (n+1) =<< traverse g rows
+                  where g row = do q <- BitArray.readArray row j
+                                   q ? BitArray.zipWith xor row0 row $ return row
 
-rankZ2_old :: [[Bool]] -> Int
-rankZ2_old = rankZ2_old' . map boolsToInteger
-
-rankZ2_old' :: [Integer] -> Int
-rankZ2_old' = go 0
-  where
-    go :: Int -> [Integer] -> Int
-    go  n []         = n
-    go  n (0:rows)   = go n rows
-    go !n (row:rows) = go (n+1) $ map (xor row `applyIf` flip testBit j) rows
-      where
-        j = head $ filter (testBit row) [0..]
+-- boolsToInteger :: [Bool] -> Integer
+-- boolsToInteger = foldl' (\x b -> 2*x + boole b) 0
+-- 
+-- rankZ2_old :: [[Bool]] -> Int
+-- rankZ2_old = dense_rankZ2 . map boolsToInteger
 
 -- AddHash
 
@@ -722,7 +700,7 @@ multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, g_)
         sB = {-# SCC "sB" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
           where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
                 flip_ i = even i ? i+1 $ i-1
-        -- TODO speed up
+        -- TODO speed up (slowest part for large systems)
         
         sF = f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
         sf g = case IntSet.size g `mod` 4 of
@@ -1117,7 +1095,10 @@ ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
 {-# SCC regionEE_1d #-}
 regionEE_1d :: Ls -> ([X] -> [Sigma]) -> [(L,X)] -> Double
-regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral $ rankZ2 $ acommMat regionStabs
+regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
+                             $ bosonicQ ? sparse_rankZ2 acommMatB
+                                        $ runST $ dense_rankZ2 =<< acommMatF
+--   $ sparse_rankZ2 $ acommMat' regionStabs
   where lsB = ls ++ (bosonicQ ? [2] $ [])
         nB  = product lsB
         lYB = product $ tail lsB
@@ -1132,20 +1113,33 @@ regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral $ rankZ
         selRegion g (l,i) = (if i+l<nB then                fst . IntSet.split (i+l)
                                        else IntSet.union $ fst $ IntSet.split (i+l-nB) g)
                           $ snd $ IntSet.split (i-1) g
-        {-# SCC acommMat #-}
-        acommMat :: [Sigma] -> IntMap IntSet
-        acommMat gs = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip3 [1..] gs $ map size'G gs, g2 <- bosonicQ ? gs' $ g1:gs'] IntMap.empty
-          where add    i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
-                addSym i j = add i j . add j i
-                addF   i j = addSym i j . addSym (-i) (-j)
-                f ((i,gi,ni), (j,gj,nj)) | bosonicQ  = acomm0 ? addSym i j $ id
-                                         | otherwise = (bothOdd ? addF i (-j) $ id) . (i /= j && (bothOdd `xor` acomm0) ? addF i j $ id)
-                  where acomm0  = acommQ gi gj -- for fermionic, true if odd # of overlapping majorana
-                        bothOdd = odd ni && odd nj
-
--- test = regionEE_1d ls cutStabs [(2,1)]
---   where cutStabs = calcCutStabs $ fromList'Ham ls $ map fromList'GT [([0,1],1), ([0,1,2,3],1)]
---         ls = [4]
+        {-# SCC acommMatB #-}
+        acommMatB :: IntMap IntSet
+        acommMatB = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip [1..] regionStabs, g2 <- gs'] IntMap.empty
+          where add i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
+                f ((i,gi), (j,gj)) = acommQ gi gj ? add i j . add j i $ id
+        {-# SCC acommMatF #-}
+        acommMatF :: ST s [STBitArray s Int]
+        acommMatF = do let n = length regionStabs
+                           bounds = (-n, n-1)
+                       mat <- (Array.listArray bounds <$>) $ sequence $ replicate (2*n) $ BitArray.newArray bounds False
+                       let add    i j = BitArray.writeArray (mat Array.! i) j True
+                           addF q i j = q ? (add i j >> add j i >> add (-i-1) (-j-1) >> add (-j-1) (-i-1)) $ return ()
+                       sequence_ [ addF bothOdd i (-j-1) >> addF (i /= j && (bothOdd `xor` acomm0)) i j
+                                 | gs'@((i,gi,ni):_) <- tails $ zip3 [0..] regionStabs $ map size'G regionStabs,
+                                   (j,gj,nj) <- gs',
+                                   let acomm0  = acommQ gi gj -- true if odd # of overlapping majorana
+                                       bothOdd = odd ni && odd nj ]
+                       return $ Array.elems mat
+--         acommMat' :: [Sigma] -> IntMap IntSet
+--         acommMat' gs = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip3 [1..] gs $ map size'G gs, g2 <- bosonicQ ? gs' $ g1:gs'] IntMap.empty
+--           where add    i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
+--                 addSym i j = add i j . add j i
+--                 addF   i j = addSym i j . addSym (-i) (-j)
+--                 f ((i,gi,ni), (j,gj,nj)) | bosonicQ  = acomm0 ? addSym i j $ id
+--                                          | otherwise = (bothOdd ? addF i (-j) $ id) . (i /= j && (bothOdd `xor` acomm0) ? addF i j $ id)
+--                   where acomm0  = acommQ gi gj -- for fermionic, true if odd # of overlapping majorana
+--                         bothOdd = odd ni && odd nj
 
 -- stabilizers that may have been cut by [x..x+lx/2-1] for any x in xs
 {-# SCC calcCutStabs #-}

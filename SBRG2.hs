@@ -38,6 +38,7 @@ import Data.Either
 import Data.Function
 import Data.Foldable
 import Data.Hashable
+import Data.Ix
 import Data.List
 import Data.Maybe
 import Data.NumInstances.Tuple
@@ -75,6 +76,7 @@ import qualified Data.IntMap.Strict as IntMap hiding (fromList, insert, delete, 
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
 
+import Data.Array (Array)
 import qualified Data.Array as Array
 
 import Data.Array.BitArray.ST (STBitArray)
@@ -188,6 +190,9 @@ justIf' f x = justIf (f x) x
 {-# SCC xor'IntSet #-}
 xor'IntSet :: IntSet -> IntSet -> IntSet
 xor'IntSet x y = IntSet.union x y `IntSet.difference` IntSet.intersection x y
+
+array'Array :: Ix i => (i,i) -> (i -> a) -> Array i a
+array'Array bounds f = Array.listArray bounds $ f <$> range bounds
 
 mergeUsing :: (a -> a -> a) -> a -> [a] -> a
 mergeUsing f x_ xs_ = merge $ x_:xs_
@@ -698,10 +703,21 @@ multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, g_)
                                       | otherwise = (sF + sf g1_ + sf g2_ - sf (is'G g_), g_)
   where g_ = {-# SCC "g_" #-} sigma $ xor'IntSet g1_ g2_
         
-        sB = {-# SCC "sB" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ {-# SCC "sB.flip" #-} IntSet.map flip_ g2_
-          where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
-                flip_ i = even i ? i+1 $ i-1
-        -- TODO speed up (slowest part for large systems)
+        sB = {-# SCC "sB" #-} intersection'IntSet 0 (+) mergeBitmasks g1_ g2_
+          where mergeBitmasks b1 b2 = sum [dat  Array.! (g b1, g b2) | i <- [0,n .. 64-n], let g b = shift b (-i) .&. mask ]
+                dat  = {-# SCC "sB.dat" #-} array'Array ((0,0), (2^n-1,2^n-1)) $
+                          \(b1,b2) -> sum [dat0 Array.! (g b1, g b2) | i <- [0,2 .. n -2], let g b = shift b (-i) .&. 3    ]
+                  where dat0 = Array.listArray ((0,0),(3,3)) [0, 0, 0, 0,
+                                                              0, 0, 1,-1,
+                                                              0,-1, 0, 1,
+                                                              0, 1,-1, 0]
+                mask = 0xFF -- F = 1111
+                n = 8
+        
+        --sB_slow :: Int
+        --sB_slow = {-# SCC "sB_slow" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
+        --  where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
+        --        flip_ i = even i ? i+1 $ i-1
         
         sF = f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
         sf g = case IntSet.size g `mod` 4 of

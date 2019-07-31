@@ -20,7 +20,7 @@
 -- default:
 #ifndef FERMIONIC
 #ifndef BOSONIC
-#define FERMIONIC
+#define BOSONIC
 #endif
 #endif
 
@@ -42,6 +42,7 @@ import Data.List
 import Data.Maybe
 import Data.NumInstances.Tuple
 import Data.Ord
+import Debug.Trace
 import Numeric.IEEE (nan, infinity, succIEEE, predIEEE)
 import Safe
 import Safe.Exact
@@ -538,7 +539,7 @@ type Index = Int
 type Pos   = Int
 type SigmaHash = Int
 
--- if bosonic, 00~1, 01~x, 10~y, 11~z
+-- if bosonic, 00~1, 10~x, 01~y, 11~z
 -- if fermionic, is'G should always have even size, and if size is 2 mod 4, then an implicit factor of i is included
 data Sigma = Sigma {
   is'G   :: !IntSet, -- Index set
@@ -697,7 +698,7 @@ multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, g_)
                                       | otherwise = (sF + sf g1_ + sf g2_ - sf (is'G g_), g_)
   where g_ = {-# SCC "g_" #-} sigma $ xor'IntSet g1_ g2_
         
-        sB = {-# SCC "sB" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
+        sB = {-# SCC "sB" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ {-# SCC "sB.flip" #-} IntSet.map flip_ g2_
           where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
                 flip_ i = even i ? i+1 $ i-1
         -- TODO speed up (slowest part for large systems)
@@ -940,6 +941,7 @@ type G4_H0G = Either Sigma (F,Int,Int) -- Either g4 (rms of icomm H_0 Sigma/h_3^
 data RG = RG {
   ls0'RG             :: ![Int],
   ham'RG             :: !Ham,
+  ham_sizes'RG       :: ![Int],
   diag'RG            :: !(Maybe MapGT),
   unusedIs'RG        :: !IntSet,
   g4_H0Gs'RG         :: ![G4_H0G],
@@ -950,17 +952,21 @@ data RG = RG {
   stab1'RG           :: ![SigmaTerm],      -- stabilizers in current basis
   stab'RG            ::  Ham,              -- stabilizers in old basis
   max_rg_terms'RG    :: !(Maybe Int),
+  n_rg_terms'RG      :: ![Int],
   bifurcation'RG     :: !Bifurcation,
   randGen'RG         :: !Random.StdGen}
   deriving (Show)
 
 instance MySeq RG where
   mySeq rg = id -- deepseq rg
+           . seq' (head . ham_sizes'RG)
+           . seq' diag'RG
            . seq' (head . g4_H0Gs'RG)
            . seq' (head . offdiag_errors'RG)
            . seq' ((head<$>) . trash'RG)
            . seq' (head . stab0'RG)
            . seq' (head . stab1'RG)
+           . seq' (head . n_rg_terms'RG)
     where seq' f = mySeq $ f rg
 
 ls'RG :: RG -> [Int]
@@ -977,13 +983,13 @@ wolff_errors'RG = map fst3 . rights . g4_H0Gs'RG
 
 init'RG :: [Int] -> Int -> Ham -> RG
 init'RG ls0 seed ham = rg
-  where rg = RG ls0 ham (Just Map.empty) (IntSet.fromDistinctAscList [0..((bosonicQ ? 2 $ 1) * n'Ham ham - 1)])
-             [] False [] (Just []) [] [] (stabilizers rg) Nothing SB (Random.mkStdGen $ hashWithSalt seed "init'RG")
+  where rg = RG ls0 ham [Map.size $ gc'Ham ham] (Just Map.empty) (IntSet.fromDistinctAscList [0..((bosonicQ ? 2 $ 1) * n'Ham ham - 1)])
+             [] False [] (Just []) [] [] (stabilizers rg) Nothing [] SB (Random.mkStdGen $ hashWithSalt seed "init'RG")
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 {-# SCC rgStep #-}
 rgStep :: RG -> RG
-rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms bifurcation randGen)
+rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms n_rg_terms bifurcation randGen)
   | IntSet.null unusedIs = rg
   | otherwise            = myForce rg'
   where
@@ -1048,7 +1054,8 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     {-# SCC ham4 #-} -- remove diagonal matrices from ham and project to ground state if not bifurcationQ
     ham4           = (bifurcationQ ? id $ (+# proj offdiag))
                    $ flip deleteSigmas'Ham ham3 $ map fst $ bifurcationQ ? diag' $ _comm
-    {-# SCC _G2 #-} -- distribute _G1
+    {-# SCC _G2 #-} -- distribute _G1 = [(icomm g3' gT/h3' = i[g3',gT]/2h3', -gT)] where gT is in Sigma
+                    -- _G2 = g3' G^2/2h3' where G = Sigma
     _G2            = proj $ catMaybes -- $ myParListChunk 64
                      [ icomm'GT gL gR
                      | gLRs@((gL,_):_) <- init $ tails _G1,
@@ -1060,6 +1067,7 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
     
     {-# SCC rg' #-}
     rg' = rg {ham'RG            = ham4 +# _G4,
+              ham_sizes'RG      = (Map.size $ gc'Ham $ ham'RG rg') : ham_sizes,
               diag'RG           = (+# [proj diag',diag'']) <$> diag,
               unusedIs'RG       = unusedIs',
               g4_H0Gs'RG        = g4_H0Gs' ++ g4_H0Gs,
@@ -1069,7 +1077,8 @@ rgStep rg@(RG _ ham1 diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
               stab'RG           = stabilizers rg',
-              randGen'RG        = randGen'}
+              randGen'RG        = randGen',
+              n_rg_terms'RG     = length _G3 : n_rg_terms}
 
 stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
@@ -1098,7 +1107,6 @@ regionEE_1d :: Ls -> ([X] -> [Sigma]) -> [(L,X)] -> Double
 regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
                              $ bosonicQ ? sparse_rankZ2 acommMatB
                                         $ runST $ dense_rankZ2 =<< acommMatF
---   $ sparse_rankZ2 $ acommMat' regionStabs
   where lsB = ls ++ (bosonicQ ? [2] $ [])
         nB  = product lsB
         lYB = product $ tail lsB
@@ -1131,15 +1139,6 @@ regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
                                    let acomm0  = acommQ gi gj -- true if odd # of overlapping majorana
                                        bothOdd = odd ni && odd nj ]
                        return $ Array.elems mat
---         acommMat' :: [Sigma] -> IntMap IntSet
---         acommMat' gs = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip3 [1..] gs $ map size'G gs, g2 <- bosonicQ ? gs' $ g1:gs'] IntMap.empty
---           where add    i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
---                 addSym i j = add i j . add j i
---                 addF   i j = addSym i j . addSym (-i) (-j)
---                 f ((i,gi,ni), (j,gj,nj)) | bosonicQ  = acomm0 ? addSym i j $ id
---                                          | otherwise = (bothOdd ? addF i (-j) $ id) . (i /= j && (bothOdd `xor` acomm0) ? addF i j $ id)
---                   where acomm0  = acommQ gi gj -- for fermionic, true if odd # of overlapping majorana
---                         bothOdd = odd ni && odd nj
 
 -- stabilizers that may have been cut by [x..x+lx/2-1] for any x in xs
 {-# SCC calcCutStabs #-}
@@ -1305,7 +1304,7 @@ prettyPrint :: Bool
 prettyPrint = False
 
 fastSumQ :: Bool
-fastSumQ = False
+fastSumQ = False -- this can actually cause a slowdown if lots of terms have to be added to Ham as a result
 
 parallelQ :: Bool
 parallelQ = False
@@ -1335,7 +1334,7 @@ main = do
 --     :: IO (Int, Model, [Int], [F], Double, Int, Int)
   
   let alterSeedQ     = True
-      allStabsQ      = False
+      allStabsQ      = detailedQ
       calc_EEQ       = True
     --calc_aCorrQ    = False
     --calc_aCorr'Q   = False
@@ -1362,7 +1361,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190705.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190731.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1393,6 +1392,18 @@ main = do
   
   putStr "offdiag errors: "
   print $ cut_pow2 $ offdiag_errors'RG rg
+  
+  putStr "Hamiltonian sizes: "
+  print $ cut_pow2 $ tail $ ham_sizes'RG rg
+  
+  putStr "max Hamiltonian size: "
+  print $ maximum $ ham_sizes'RG rg
+  
+  putStr "new RG terms: "
+  print $ cut_pow2 $ n_rg_terms'RG rg
+  
+  putStr "max new RG terms: "
+  print $ maximum $ n_rg_terms'RG rg
   
   putStr "stabilizer energies: "
   print $ cut_pow2 $ map (abs . snd) $ stab0'RG rg
@@ -1436,7 +1447,7 @@ main = do
         length_histo ns = generic_histo ns (length'G $ fromJust l_1d)
         
         all_histos :: String -> ([Int],[Int]) -> [Int] -> [SigmaTerm] -> IO ()
-        all_histos name (nsS,nsS') nsL gcs = do
+        all_histos name (nsS,_{-nsS'-}) nsL gcs = do
           putStr $ name ++ " size histo: "
           print $ generic_histo nsS size'G gcs
           
@@ -1444,8 +1455,8 @@ main = do
             putStr $ name ++ " length histo: "
             print $ length_histo nsL gcs
             
-            putStr $ name ++ " size-length histo: "
-            print $ map (second $ length_histo nsL) $ generic_histo_ nsS' $ map (\gT@(g,_) -> (size'G g, gT)) gcs
+            --putStr $ name ++ " size-length histo: "
+            --print $ map (second $ length_histo nsL) $ generic_histo_ nsS' $ map (\gT@(g,_) -> (size'G g, gT)) gcs
     
     all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ Map.toList $ gc'Ham $ stab'RG rg
     all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $ Map.toList <$> diag'RG rg

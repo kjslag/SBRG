@@ -659,34 +659,34 @@ acommQ g1 g2 = -- asserting (== acommQ_slow g1 g2) $
 {-# INLINE intersection'IntSet #-}
 -- modified from https://hackage.haskell.org/package/containers-0.6.1.1/docs/src/Data.IntSet.Internal.html#intersection
 intersection'IntSet :: a -> (a -> a -> a) -> (IntSet.BitMap -> IntSet.BitMap -> a) -> IntSet -> IntSet -> a
-intersection'IntSet x0 f g = intersection
-  where intersection t1@(IntSet.Bin p1 m1 l1 r1) t2@(IntSet.Bin p2 m2 l2 r2)
+intersection'IntSet x0_ f g = intersection x0_
+  where intersection !x0 t1@(IntSet.Bin p1 m1 l1 r1) t2@(IntSet.Bin p2 m2 l2 r2)
           | shorter m1 m2  = intersection1
           | shorter m2 m1  = intersection2
-          | p1 == p2       = intersection l1 l2 `f` intersection r1 r2
+          | p1 == p2       = intersection (intersection x0 l1 l2) r1 r2
           | otherwise      = x0
           where intersection1 | nomatch p2 p1 m1  = x0
-                              | zero p2 m1        = intersection l1 t2
-                              | otherwise         = intersection r1 t2
+                              | zero p2 m1        = intersection x0 l1 t2
+                              | otherwise         = intersection x0 r1 t2
                 intersection2 | nomatch p1 p2 m2  = x0
-                              | zero p1 m2        = intersection t1 l2
-                              | otherwise         = intersection t1 r2
-        intersection t1@(IntSet.Bin _ _ _ _) (IntSet.Tip kx2 bm2) = intersectBM t1
+                              | zero p1 m2        = intersection x0 t1 l2
+                              | otherwise         = intersection x0 t1 r2
+        intersection !x0 t1@(IntSet.Bin _ _ _ _) (IntSet.Tip kx2 bm2) = intersectBM t1
           where intersectBM (IntSet.Bin p1 m1 l1 r1) | nomatch kx2 p1 m1 = x0
-                                              | zero kx2 m1       = intersectBM l1
-                                              | otherwise         = intersectBM r1
-                intersectBM (IntSet.Tip kx1 bm1) | kx1 == kx2 = g bm1 bm2
-                                          | otherwise  = x0
+                                                     | zero kx2 m1       = intersectBM l1
+                                                     | otherwise         = intersectBM r1
+                intersectBM (IntSet.Tip kx1 bm1) | kx1 == kx2 = x0 `f` g bm1 bm2
+                                                 | otherwise  = x0
                 intersectBM IntSet.Nil = x0
-        intersection (IntSet.Bin _ _ _ _) IntSet.Nil = x0
-        intersection (IntSet.Tip kx1 bm1) t2 = intersectBM t2
+        intersection !x0 (IntSet.Bin _ _ _ _) IntSet.Nil = x0
+        intersection !x0 (IntSet.Tip kx1 bm1) t2 = intersectBM t2
           where intersectBM (IntSet.Bin p2 m2 l2 r2) | nomatch kx1 p2 m2 = x0
-                                              | zero kx1 m2       = intersectBM l2
-                                              | otherwise         = intersectBM r2
-                intersectBM (IntSet.Tip kx2 bm2) | kx1 == kx2 = g bm1 bm2
-                                          | otherwise = x0
+                                                     | zero kx1 m2       = intersectBM l2
+                                                     | otherwise         = intersectBM r2
+                intersectBM (IntSet.Tip kx2 bm2) | kx1 == kx2 = x0 `f` g bm1 bm2
+                                                 | otherwise  = x0
                 intersectBM IntSet.Nil = x0
-        intersection IntSet.Nil _ = x0
+        intersection !x0 IntSet.Nil _ = x0
         zero = IntSet.zero
         nomatch i p m = (mask i m) /= p
         shorter m1 m2 = (natFromInt m1) > (natFromInt m2)

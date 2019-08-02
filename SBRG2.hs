@@ -171,6 +171,10 @@ mapHead _ _      = undefined
 foldl'_ :: Foldable t => (a -> b -> b) -> t a -> b -> b
 foldl'_ = flip . foldl' . flip
 
+-- nest' :: Int -> (a -> a) -> a -> a
+-- nest' 0 _ !x = x
+-- nest' n f !x = f $ nest (n-1) f x
+
 newtype NestedFold t1 t2 a = NestedFold { getNestedFold :: t1 (t2 a) }
 
 instance (Foldable t1, Foldable t2) => Foldable (NestedFold t1 t2) where
@@ -627,9 +631,9 @@ fromList'GT (is,c) = (fromList'G is, fermionicQ && odd (sF is) ? -c $ c)
   where sF :: [Int] -> Int
         sF (x0:xs0) = go ([],0) ([],0) xs0 0
            where go :: ([Int],Int) -> ([Int],Int) -> [Int] -> Int -> Int
-                 go (ls,nl) (rs,nr) (x:xs) s | x < x0    = go (x:ls, nl+1) (  rs, nr  ) xs $ s + nl + 1 + nr
-                                             | x > x0    = go (  ls, nl  ) (x:rs, nr+1) xs $ s + nr
-                                             | otherwise = error "fromList'GT"
+                 go (ls,nl) (rs,nr) (x:xs) !s | x < x0    = go (x:ls, nl+1) (  rs, nr  ) xs $ s + nl + 1 + nr
+                                              | x > x0    = go (  ls, nl  ) (x:rs, nr+1) xs $ s + nr
+                                              | otherwise = error "fromList'GT"
                  go (ls, _) (rs, _) [] s = s + sF ls + sF rs
         sF [] = 0
 
@@ -761,7 +765,7 @@ union'IntSet g f = union_
 {-# SCC multSigma #-} 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
 multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB `mod` 4, g_)
-                                      | otherwise = ((sF_new + sf g1_ + sf g2_ - sf (is'G g_)) `mod` 4, g_)
+                                      | otherwise = ((sF + sf g1_ + sf g2_ - sf (is'G g_)) `mod` 4, g_)
   where g_ = {-# SCC "g_" #-} sigma $ xor'IntSet g1_ g2_
         
         sB = {-# SCC "sB" #-} intersection'IntSet f g1_ g2_ 0
@@ -779,22 +783,20 @@ multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB `mod` 4, g_)
                     2 -> 1
                     _ -> error "multSigma"
         
+        (0, sF) = {-# SCC "sF" #-} second (2*) $ union'IntSet g f g1_ g2_ (IntSet.size g1_, 0)
+          where g (Left  is) (!n1,!s) = (n1 - IntSet.size is, s)
+                g (Right is) (!n1,!s) = (n1, s + n1 * IntSet.size is)
+                f b1 b2 (!n1,!s) = (n1 - popCount b1,) $ (s+) $ popCount 
+                                 $ (b2 .&.) $ (even n1 ? id $ complement) $ go 1 b1
+                  where go 64 !b = b
+                        go i  !b = go (2*i) $ b `xor` unsafeShiftL b i
+        
         --sF_slow = {-# SCC "sF_slow" #-} 2 * f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
         --  where f :: Int -> [Int] -> [Int] -> Int -> Int
         --        f n1 (i1:g1) (i2:g2) !s | i1 < i2   = f (n1-1)     g1  (i2:g2)   s
         --                                | i1 > i2   = f  n1    (i1:g1)     g2  $ s + boole (odd  n1)
         --                                | otherwise = f (n1-1)     g1      g2  $ s + boole (even n1)
         --        f _ _ _ s = s
-        
-        (0, sF) = {-# SCC "sF" #-} second (2*) $ union'IntSet g f g1_ g2_ (IntSet.size g1_, 0)
-          where g (Left  is) (!n1,!s) = (n1 - IntSet.size is, s)
-                g (Right is) (!n1,!s) = (n1, s + n1 * IntSet.size is)
-                f b1 b2 = go 0
-                  where go :: Int -> (Int,Int) -> (Int,Int)
-                        go i  (!n1,!s) = i == 64 ? (n1,s) $ go (i+n) $ (n1 - popCount (h b1),) $ (s+) $ popCount 
-                                       $ (h b2 .&.) $ (xor $ h b1) $ (odd n1 ? complement $ id) $ multSigma_datF Array.! h b1
-                          where h b = fromIntegral $ unsafeShiftR b i :: Word16
-                        n = 16
 
 {-# SCC multSigma_datB #-} 
 multSigma_datB :: UArray (Word,Word) Int8
@@ -805,14 +807,6 @@ multSigma_datB = array'Array ((0,0), (2^n-1,2^n-1)) $ \(b1,b2) -> sum [dat0 Arra
                                               0,-1, 0, 1,
                                               0, 1,-1, 0]
         n = 8
-
-{-# SCC multSigma_datF #-} 
-multSigma_datF :: UArray Word16 Word16
-multSigma_datF = array'Array (0, complement 0) $ \b ->
-    let go i !b' | i == n-1  = b'
-                 | otherwise = go (i+1) $ not (testBit b i) ? b' $ xor b' $ unsafeShiftL (complement 0) (i+1)
-    in  go 0 0
-  where n = 16
 
 -- i [a,b]/2
 icomm :: Sigma -> Sigma -> Maybe SigmaTerm

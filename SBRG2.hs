@@ -20,7 +20,7 @@
 -- default:
 #ifndef FERMIONIC
 #ifndef BOSONIC
-#define BOSONIC
+#define FERMIONIC
 #endif
 #endif
 
@@ -38,11 +38,13 @@ import Data.Either
 import Data.Function
 import Data.Foldable
 import Data.Hashable
+import Data.Int
 import Data.Ix
 import Data.List
 import Data.Maybe
 import Data.NumInstances.Tuple
 import Data.Ord
+import Data.Word
 import Debug.Trace
 import Numeric.IEEE (nan, infinity, succIEEE, predIEEE)
 import Safe
@@ -64,8 +66,9 @@ import qualified System.Random as Random
 --import Control.Monad.Trans.State.Strict (State)
 import qualified Control.Monad.Trans.State.Strict as State
 
-import Data.IntSet (IntSet)
+import Data.IntSet.Internal (IntSet(..), BitMap)
 import qualified Data.IntSet.Internal as IntSet
+import qualified Utils.Containers.Internal.BitUtil as BitUtil
 
 import Data.Set (Set)
 import qualified Data.Set as Set
@@ -77,10 +80,15 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map hiding (fromList, insert, delete, adjust, adjustWithKey, update, updateWithKey) -- use alter instead
 
 import Data.Array (Array)
-import qualified Data.Array as Array
+import Data.Array.Unboxed (UArray)
+import Data.Array.IArray (IArray)
+import qualified Data.Array.IArray as Array
+
+-- import Data.Array.BitArray (BitArray)
+-- import qualified Data.Array.BitArray as BitArray
 
 import Data.Array.BitArray.ST (STBitArray)
-import qualified Data.Array.BitArray.ST as BitArray
+import qualified Data.Array.BitArray.ST as STBitArray
 
 -- import Data.Vector.Unboxed (Vector)
 -- import qualified Data.Vector.Unboxed as Vector
@@ -191,8 +199,11 @@ justIf' f x = justIf (f x) x
 xor'IntSet :: IntSet -> IntSet -> IntSet
 xor'IntSet x y = IntSet.union x y `IntSet.difference` IntSet.intersection x y
 
-array'Array :: Ix i => (i,i) -> (i -> a) -> Array i a
+array'Array :: (IArray a e, Ix i) => (i,i) -> (i -> e) -> a i e
 array'Array bounds f = Array.listArray bounds $ f <$> range bounds
+
+-- array'BitArray :: Ix i => (i,i) -> (i -> e) -> a i e
+-- array'BitArray bounds f = BitArray.listArray bounds $ f <$> range bounds
 
 mergeUsing :: (a -> a -> a) -> a -> [a] -> a
 mergeUsing f x_ xs_ = merge $ x_:xs_
@@ -483,10 +494,10 @@ dense_rankZ2 :: [STBitArray s Int] -> ST s Int
 dense_rankZ2 = go 0
   where go :: Int -> [STBitArray s Int] -> ST s Int
         go  n []          = return n
-        go !n (row0:rows) = maybe (go n rows) f =<< BitArray.elemIndex True row0
+        go !n (row0:rows) = maybe (go n rows) f =<< STBitArray.elemIndex True row0
           where f j = go (n+1) =<< traverse g rows
-                  where g row = do q <- BitArray.readArray row j
-                                   q ? BitArray.zipWith xor row0 row $ return row
+                  where g row = do q <- STBitArray.readArray row j
+                                   q ? STBitArray.zipWith xor row0 row $ return row
 
 -- boolsToInteger :: [Bool] -> Integer
 -- boolsToInteger = foldl' (\x b -> 2*x + boole b) 0
@@ -544,8 +555,9 @@ type Index = Int
 type Pos   = Int
 type SigmaHash = Int
 
--- if bosonic, 00~1, 10~x, 01~y, 11~z
+-- if bosonic, is'G (IntSet.singleton $ 2^(2*i)*k) -> [1,x,y,z] operator at i if k=[0,1,2,3]
 -- if fermionic, is'G should always have even size, and if size is 2 mod 4, then an implicit factor of i is included
+--               and indices should be positive integers (due to multSigma)
 data Sigma = Sigma {
   is'G   :: !IntSet, -- Index set
   hash'G ::  SigmaHash }
@@ -555,7 +567,7 @@ sigma ik = g
   where g = Sigma ik $ calc_hash'G g
 
 check'G :: Sigma -> Bool
-check'G g = bosonicQ || even (IntSet.size $ is'G g)
+check'G g = bosonicQ || even (IntSet.size $ is'G g) && (IntSet.findMin $ is'G g) >= 0 -- multSigma probably assumes is'G are non-negative
 
 {-# SCC calc_hash'G #-}
 calc_hash'G :: Sigma -> SigmaHash
@@ -652,41 +664,41 @@ acommQ_slow g1 g2 = odd $ IntSet.size $ is'G g1 `IntSet.intersection` f (is'G g2
 {-# SCC acommQ #-}
 acommQ :: Sigma -> Sigma -> Bool
 acommQ g1 g2 = -- asserting (== acommQ_slow g1 g2) $
-               intersection'IntSet False xor (\l r -> odd $ popCount $ l .&. flip_ r) (is'G g1) (is'G g2)
+               intersection'IntSet (\l r -> xor $ odd $ popCount $ l .&. flip_ r) (is'G g1) (is'G g2) False
   where flip_ b = fermionicQ ? b $ unsafeShiftL (b .&. 0x5555555555555555) 1 .|. -- 5 = 0101
                                    unsafeShiftR (b .&. 0xAAAAAAAAAAAAAAAA) 1     -- A = 1010
 
 {-# INLINE intersection'IntSet #-}
 -- modified from https://hackage.haskell.org/package/containers-0.6.1.1/docs/src/Data.IntSet.Internal.html#intersection
-intersection'IntSet :: a -> (a -> a -> a) -> (IntSet.BitMap -> IntSet.BitMap -> a) -> IntSet -> IntSet -> a
-intersection'IntSet x0_ f g = intersection x0_
-  where intersection !x0 t1@(IntSet.Bin p1 m1 l1 r1) t2@(IntSet.Bin p2 m2 l2 r2)
+intersection'IntSet :: (BitMap -> BitMap -> a -> a) -> IntSet -> IntSet -> a -> a
+intersection'IntSet f = intersection
+  where intersection t1@(Bin p1 m1 l1 r1) t2@(Bin p2 m2 l2 r2) !x
           | shorter m1 m2  = intersection1
           | shorter m2 m1  = intersection2
-          | p1 == p2       = intersection (intersection x0 l1 l2) r1 r2
-          | otherwise      = x0
-          where intersection1 | nomatch p2 p1 m1  = x0
-                              | zero p2 m1        = intersection x0 l1 t2
-                              | otherwise         = intersection x0 r1 t2
-                intersection2 | nomatch p1 p2 m2  = x0
-                              | zero p1 m2        = intersection x0 t1 l2
-                              | otherwise         = intersection x0 t1 r2
-        intersection !x0 t1@(IntSet.Bin _ _ _ _) (IntSet.Tip kx2 bm2) = intersectBM t1
-          where intersectBM (IntSet.Bin p1 m1 l1 r1) | nomatch kx2 p1 m1 = x0
-                                                     | zero kx2 m1       = intersectBM l1
-                                                     | otherwise         = intersectBM r1
-                intersectBM (IntSet.Tip kx1 bm1) | kx1 == kx2 = x0 `f` g bm1 bm2
-                                                 | otherwise  = x0
-                intersectBM IntSet.Nil = x0
-        intersection !x0 (IntSet.Bin _ _ _ _) IntSet.Nil = x0
-        intersection !x0 (IntSet.Tip kx1 bm1) t2 = intersectBM t2
-          where intersectBM (IntSet.Bin p2 m2 l2 r2) | nomatch kx1 p2 m2 = x0
-                                                     | zero kx1 m2       = intersectBM l2
-                                                     | otherwise         = intersectBM r2
-                intersectBM (IntSet.Tip kx2 bm2) | kx1 == kx2 = x0 `f` g bm1 bm2
-                                                 | otherwise  = x0
-                intersectBM IntSet.Nil = x0
-        intersection !x0 IntSet.Nil _ = x0
+          | p1 == p2       = intersection r1 r2 $ intersection l1 l2 x
+          | otherwise      = x
+          where intersection1 | nomatch p2 p1 m1  = x
+                              | zero p2 m1        = intersection l1 t2 x
+                              | otherwise         = intersection r1 t2 x
+                intersection2 | nomatch p1 p2 m2  = x
+                              | zero p1 m2        = intersection t1 l2 x
+                              | otherwise         = intersection t1 r2 x
+        intersection t1@(Bin _ _ _ _) (Tip kx2 bm2) !x = intersectBM t1
+          where intersectBM (Bin p1 m1 l1 r1) | nomatch kx2 p1 m1 = x
+                                              | zero kx2 m1       = intersectBM l1
+                                              | otherwise         = intersectBM r1
+                intersectBM (Tip kx1 bm1) | kx1 == kx2 = f bm1 bm2 x
+                                          | otherwise  = x
+                intersectBM Nil = x
+        intersection (Bin _ _ _ _) Nil !x = x
+        intersection (Tip kx1 bm1) t2 !x = intersectBM t2
+          where intersectBM (Bin p2 m2 l2 r2) | nomatch kx1 p2 m2 = x
+                                              | zero kx1 m2       = intersectBM l2
+                                              | otherwise         = intersectBM r2
+                intersectBM (Tip kx2 bm2) | kx1 == kx2 = f bm1 bm2 x
+                                          | otherwise  = x
+                intersectBM Nil = x
+        intersection Nil _ !x = x
         zero = IntSet.zero
         nomatch i p m = (mask i m) /= p
         shorter m1 m2 = (natFromInt m1) > (natFromInt m2)
@@ -697,44 +709,116 @@ intersection'IntSet x0_ f g = intersection x0_
         intFromNat :: Word -> Int
         intFromNat w = fromIntegral w
 
+-- -- f and g are applied from left to right in the index order, but the integers are ordered like 0,1,2,-2,-1
+-- {-# INLINE union'IntSet #-}
+-- -- modified from https://hackage.haskell.org/package/containers-0.6.1.1/docs/src/Data.IntSet.Internal.html#union
+-- union'IntSet :: (Either IntSet IntSet -> a -> a) -> (IntSet.BitMap -> IntSet.BitMap -> a -> a) -> IntSet -> IntSet -> a -> a
+-- union'IntSet g f = union_
+--   where union_ t1@(Bin p1 m1 l1 r1) t2@(Bin p2 m2 l2 r2) !x
+--           | shorter m1 m2  = union1
+--           | shorter m2 m1  = union2
+--           | p1 == p2       = union_ r1 r2 $ union_ l1 l2 x
+--           | otherwise      = link p1 t1 p2 t2 x
+--           where
+--             union1  | nomatch p2 p1 m1  = link p1 t1 p2 t2 x
+--                     | zero p2 m1        = g (Left r1) $ union_ l1 t2 x
+--                     | otherwise         = union_ r1 t2 $ g (Left l1) x
+-- 
+--             union2  | nomatch p1 p2 m2  = link p1 t1 p2 t2 x
+--                     | zero p1 m2        = g (Right r2) $ union_ t1 l2 x
+--                     | otherwise         = union_ t1 r2 $ g (Right l2) x
+--         union_ t@(Bin _ _ _ _) (Tip kx bm) !x = insertBM kx bm False t x
+--         union_ t@(Bin _ _ _ _) Nil !x = g (Left t) x
+--         union_ (Tip kx bm) t !x = insertBM kx bm True t x
+--         union_ Nil t !x = g (Right t) x
+--         insertBM !kx !bm rQ t@(Bin p m l r) !x
+--           | nomatch kx p m = rQ ? link kx (Tip kx bm) p t x
+--                                 $ link p t kx (Tip kx bm) x
+--           | zero kx m      = g (lr r) $ insertBM kx bm rQ l x
+--           | otherwise      = insertBM kx bm rQ r $ g (lr l) x
+--           where lr = rQ ? Right $ Left
+--         insertBM kx bm rQ t@(Tip kx' bm') !x
+--           | kx' == kx = rQ ? f bm  bm' x
+--                            $ f bm' bm  x
+--           | otherwise = rQ ? link kx (Tip kx bm) kx' t x
+--                            $ link kx' t kx (Tip kx bm) x
+--         insertBM kx bm rQ Nil !x = flip g x $ (rQ ? Left $ Right) $ Tip kx bm
+--         link p1 t1 p2 t2 !x
+--           | zero p1 m = g (Right t2) $ g (Left  t1) x
+--           | otherwise = g (Left  t1) $ g (Right t2) x
+--           where m = branchMask p1 p2
+--         zero = IntSet.zero
+--         nomatch i p m = (mask i m) /= p
+--         shorter m1 m2 = (natFromInt m1) > (natFromInt m2)
+--         mask i m = maskW (natFromInt i) (natFromInt m)
+--         maskW i m = intFromNat (i .&. (complement (m-1) `xor` m))
+--         branchMask p1 p2 = intFromNat (BitUtil.highestBitMask (natFromInt p1 `xor` natFromInt p2))
+--         natFromInt :: Int -> Word
+--         natFromInt i = fromIntegral i
+--         intFromNat :: Word -> Int
+--         intFromNat w = fromIntegral w
+
 {-# SCC multSigma #-} 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
-multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB, g_)
-                                      | otherwise = (sF + sf g1_ + sf g2_ - sf (is'G g_), g_)
+multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB `mod` 4, g_)
+                                      | otherwise = ((sF + sf g1_ + sf g2_ - sf (is'G g_)) `mod` 4, g_)
   where g_ = {-# SCC "g_" #-} sigma $ xor'IntSet g1_ g2_
         
-        sB = {-# SCC "sB" #-} intersection'IntSet 0 (+) mergeBitmasks g1_ g2_
-          where mergeBitmasks b1 b2 = sum [dat  Array.! (g b1, g b2) | i <- [0,n .. 64-n], let g b = shift b (-i) .&. mask ]
-                dat  = {-# SCC "sB.dat" #-} array'Array ((0,0), (2^n-1,2^n-1)) $
-                          \(b1,b2) -> sum [dat0 Array.! (g b1, g b2) | i <- [0,2 .. n -2], let g b = shift b (-i) .&. 3    ]
-                  where dat0 = Array.listArray ((0,0),(3,3)) [0, 0, 0, 0,
-                                                              0, 0, 1,-1,
-                                                              0,-1, 0, 1,
-                                                              0, 1,-1, 0]
+        sB = {-# SCC "sB" #-} intersection'IntSet f g1_ g2_ 0
+          where f b1 b2 = (+) $ sum [fromIntegral $ multSigma_datB Array.! (h b1, h b2) | i <- [0,n .. 64-n], let h b = unsafeShiftR b i .&. mask]
                 mask = 0xFF -- F = 1111
                 n = 8
         
         --sB_slow :: Int
         --sB_slow = {-# SCC "sB_slow" #-} sum $ map (\i -> even i /= i `IntSet.member` union_ ? 1 $ -1) $ IntSet.toList $ IntSet.intersection g1_ $ IntSet.map flip_ g2_
-        --  where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
-        --        flip_ i = even i ? i+1 $ i-1
+        -- where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
+        --       flip_ i = even i ? i+1 $ i-1
         
-        sF = f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
+        
         sf g = case IntSet.size g `mod` 4 of
                     0 -> 0
                     2 -> 1
                     _ -> error "multSigma"
-        f :: Int -> [Int] -> [Int] -> Int -> Int
-        f n1 (i1:g1) (i2:g2) s | i1 < i2   = f (n1-1)     g1  (i2:g2) s
-                               | i1 > i2   = f  n1    (i1:g1)     g2  s'
-                               | otherwise = f (n1-1)     g1      g2  s''
-          where s'  = s + 2 * boole (odd   n1)
-                s'' = s + 2 * boole (odd $ n1 - 1)
-        f _ _ _ s = s
+        
+        sF = {-# SCC "sF_slow" #-} 2 * f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
+          where f :: Int -> [Int] -> [Int] -> Int -> Int
+                f n1 (i1:g1) (i2:g2) !s | i1 < i2   = f (n1-1)     g1  (i2:g2)   s
+                                        | i1 > i2   = f  n1    (i1:g1)     g2  $ s + boole (odd  n1)
+                                        | otherwise = f (n1-1)     g1      g2  $ s + boole (even n1)
+                f _ _ _ s = s
+        
+        --(0, sF_new) = {-# SCC "sF" #-} second (2*) $ union'IntSet g f g1_ g2_ (IntSet.size g1_, 0)
+        --  where g (Left  is) (!n1,!s) = (n1 - IntSet.size is, s)
+        --        g (Right is) (!n1,!s) = (n1, s + n1 * IntSet.size is)
+        --        f b1 b2 = go 0
+        --          where go :: Int -> (Int,Int) -> (Int,Int)
+        --                go 64   n1_s   = n1_s
+        --                go i  (!n1,!s) = go (i+n) $ (n1 - popCount (h b1),) $ (s+) $ popCount 
+        --                               $ (h b2 .&.) $ (xor $ h b1) $ (odd n1 ? complement $ id) $ multSigma_datF Array.! h b1
+        --                  where h b  = fromIntegral $ unsafeShiftR b i :: Word16
+        --                n = 16
+
+{-# SCC multSigma_datB #-} 
+multSigma_datB :: UArray (Word,Word) Int8
+multSigma_datB = array'Array ((0,0), (2^n-1,2^n-1)) $ \(b1,b2) -> sum [dat0 Array.! (h b1, h b2) | i <- [0,2 .. n-2], let h b = unsafeShiftR b i .&. 3]
+  where dat0 :: UArray (Word,Word) Int8
+        dat0 = Array.listArray ((0,0),(3,3)) [0, 0, 0, 0,
+                                              0, 0, 1,-1,
+                                              0,-1, 0, 1,
+                                              0, 1,-1, 0]
+        n = 8
+
+-- {-# SCC multSigma_datF #-} 
+-- multSigma_datF :: UArray Word16 Word16
+-- multSigma_datF = array'Array (0, complement 0) $ \b ->
+--     let go i !b' | i == n-1  = b'
+--                  | otherwise = go (i+1) $ not (testBit b i) ? b' $ xor b' $ unsafeShiftL (complement 0) (i+1)
+--     in  go 0 0
+--   where n = 16
 
 -- i [a,b]/2
 icomm :: Sigma -> Sigma -> Maybe SigmaTerm
-icomm g1 g2 = case s `mod` 4 of
+icomm g1 g2 = case s of
                    0 -> Nothing
                    2 -> Nothing
                    1 -> Just (g,-1)
@@ -744,7 +828,7 @@ icomm g1 g2 = case s `mod` 4 of
 
 -- {a,b}/2
 acomm :: Sigma -> Sigma -> Maybe SigmaTerm
-acomm g1 g2 = case s `mod` 4 of
+acomm g1 g2 = case s of
                    0 -> Just (g, 1)
                    2 -> Just (g,-1)
                    1 -> Nothing
@@ -1146,8 +1230,8 @@ regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
         acommMatF :: ST s [STBitArray s Int]
         acommMatF = do let n = length regionStabs
                            bounds = (-n, n-1)
-                       mat <- (Array.listArray bounds <$>) $ sequence $ replicate (2*n) $ BitArray.newArray bounds False
-                       let add    i j = BitArray.writeArray (mat Array.! i) j True
+                       mat <- (Array.listArray bounds <$>) $ sequence $ replicate (2*n) $ STBitArray.newArray bounds False :: ST s (Array Int (STBitArray s Int))
+                       let add    i j = STBitArray.writeArray (mat Array.! i) j True
                            addF q i j = q ? (add i j >> add j i >> add (-i-1) (-j-1) >> add (-j-1) (-i-1)) $ return ()
                        sequence_ [ addF bothOdd i (-j-1) >> addF (i /= j && (bothOdd `xor` acomm0)) i j
                                  | gs'@((i,gi,ni):_) <- tails $ zip3 [0..] regionStabs $ map size'G regionStabs,
@@ -1377,7 +1461,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190731.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190802.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1402,6 +1486,14 @@ main = do
   putStr "missing stabilizers: "
   print $ n_missing
 --mapM_ print $ map (toLists'GT ls) $ take 6 ordered_stab
+  
+  putStr "RG CPU time:  "
+  rg_cpu_time <- CPUTime.getCPUTime
+  print $ (1e-12::Double) * fromInteger rg_cpu_time
+  
+  putStr "RG WALL time: "
+  rg_endTime <- Clock.getTime Clock.Monotonic
+  print $ (1e-9::Double) * (fromInteger $ on (-) Clock.toNanoSecs rg_endTime startTime)
   
   putStr "Wolff errors: "
   print $ cut_pow2 $ wolff_errors'RG rg

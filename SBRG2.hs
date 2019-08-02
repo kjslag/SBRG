@@ -26,6 +26,7 @@
 
 -- #define PARALLEL
 
+import GHC.Prim (reallyUnsafePtrEquality#)
 import GHC.Exts (sortWith, the)
 
 -- import Control.Exception.Base (assert)
@@ -66,7 +67,7 @@ import qualified System.Random as Random
 --import Control.Monad.Trans.State.Strict (State)
 import qualified Control.Monad.Trans.State.Strict as State
 
-import Data.IntSet.Internal (IntSet(..), BitMap)
+import Data.IntSet.Internal (IntSet(..))
 import qualified Data.IntSet.Internal as IntSet
 import qualified Utils.Containers.Internal.BitUtil as BitUtil
 
@@ -101,14 +102,22 @@ import qualified Data.Array.BitArray.ST as STBitArray
 todo :: a
 todo = undefined
 
-assert :: Bool -> a -> a
-assert True  = id
-assert False = error "assert"
+assert :: String -> Bool -> a -> a
+assert _ True  = id
+assert s False = error s
 
-asserting :: (a -> Bool) -> a -> a
-asserting q x = assert (q x) x
+asserting :: String -> (a -> Bool) -> a -> a
+asserting s q x = assert s (q x) x
 
 -- generic
+
+-- http://stackoverflow.com/a/9650222
+-- http://lpaste.net/1364
+ptrEquality :: a -> a -> Bool
+ptrEquality !x !y =
+  case reallyUnsafePtrEquality# x y of
+       1# -> True
+       _  -> False
 
 if' :: Bool -> a -> a -> a
 if' True  x _ = x
@@ -198,6 +207,12 @@ justIf False = const Nothing
 
 justIf' :: (a -> Bool) -> a -> Maybe a
 justIf' f x = justIf (f x) x
+
+foldl'IntSet :: (IntSet.Prefix -> IntSet.BitMap -> a -> a) -> IntSet -> a -> a
+foldl'IntSet f = go
+  where go (Bin _ _ l r) !x = go r $ go l x
+        go (Tip p b) !x = f p b x
+        go Nil x = x
 
 {-# SCC xor'IntSet #-}
 xor'IntSet :: IntSet -> IntSet -> IntSet
@@ -567,15 +582,24 @@ data Sigma = Sigma {
   hash'G ::  SigmaHash }
 
 sigma :: IntSet -> Sigma
-sigma ik = g
-  where g = Sigma ik $ calc_hash'G g
+sigma ik = Sigma ik $ calc_hash'G ik
 
 check'G :: Sigma -> Bool
 check'G g = bosonicQ || even (IntSet.size $ is'G g) && (IntSet.findMin $ is'G g) >= 0 -- multSigma probably assumes is'G are non-negative
 
 {-# SCC calc_hash'G #-}
-calc_hash'G :: Sigma -> SigmaHash
-calc_hash'G = hash . toList'G -- TODO speedup
+calc_hash'G :: IntSet -> SigmaHash
+calc_hash'G g = assert "calc_hash'G" (finiteBitSize (0::Int) == 64) $ foldl'IntSet h g r0
+  where h p b s = r2*(rotateL (r1*s) 31 `xor` p) `xor` fromIntegral b
+        [r0,r1,r2] = [-999131058408291745, 5388482987636913043, -4581131298018549302] -- random Ints
+-- calc_hash'G = hash . IntSet.toList
+
+test_hash'G :: Bool
+test_hash'G = False
+
+-- used to test hash quality
+assert_unique'G :: IntSet -> IntSet -> a -> a
+assert_unique'G g1 g2 = assert ("assert_unique'G:\n" ++ intercalate "\n" (show . IntSet.toList <$> [g1,g2])) $ ptrEquality g1 g2 || g1 == g2
 
 pos_i'G :: Index -> Pos
 pos_i'G | fermionicQ = id
@@ -588,7 +612,6 @@ positions'G :: Sigma -> IntSet
 positions'G | fermionicQ = is'G
             | otherwise  = IntSet.map pos_i'G . is'G
 
--- http://hackage.haskell.org/package/hashable-1.2.4.0/docs/src/Data.Hashable.Class.html#line-452
 instance Hashable Sigma where
   hashWithSalt salt = hashWithSalt salt . hash'G
   hash = hash'G
@@ -596,10 +619,13 @@ instance Hashable Sigma where
 instance MySeq Sigma
 
 instance Eq Sigma where
-  Sigma _ hash1 == Sigma _ hash2 = hash1 == hash2
+  Sigma g1 hash1 == Sigma g2 hash2 = test_hash'G && hashEq ? assert_unique'G g1 g2 hashEq $ hashEq
+    where hashEq = hash1 == hash2
 
 instance Ord Sigma where
-  Sigma _ hash1 `compare` Sigma _ hash2 = compare hash1 hash2
+  Sigma g1 hash1 `compare` Sigma g2 hash2 = not test_hash'G ? hashOrd $
+      case hashOrd of EQ -> assert_unique'G g1 g2 EQ; o -> o
+    where hashOrd = compare hash1 hash2
 
 instance Show Sigma where
   showsPrec n = showsPrec n . toList'G
@@ -616,10 +642,10 @@ toList'GT :: SigmaTerm -> ([Index],F)
 toList'GT = first toList'G
 
 fromList'G :: [Index] -> Sigma
-fromList'G is = asserting check'G . sigma . asserting ((== length is) . IntSet.size) $ IntSet.fromList is
+fromList'G is = asserting "fromList'G check'G" check'G . sigma . asserting "fromList'G unique" ((== length is) . IntSet.size) $ IntSet.fromList is
 
 fromListB'G :: [(Pos,Int)] -> Sigma
-fromListB'G = assert bosonicQ fromList'G . concat . map f
+fromListB'G = assert "fromListB'G" bosonicQ $ fromList'G . concat . map f
   where f (i,k) = case k of 0 -> []
                             1 -> [2*i]
                             2 -> [2*i+1]
@@ -667,14 +693,13 @@ acommQ_slow g1 g2 = odd $ IntSet.size $ is'G g1 `IntSet.intersection` f (is'G g2
 
 {-# SCC acommQ #-}
 acommQ :: Sigma -> Sigma -> Bool
-acommQ g1 g2 = -- asserting (== acommQ_slow g1 g2) $
-               intersection'IntSet (\l r -> xor $ odd $ popCount $ l .&. flip_ r) (is'G g1) (is'G g2) False
+acommQ g1 g2 = intersection'IntSet (\l r -> xor $ odd $ popCount $ l .&. flip_ r) (is'G g1) (is'G g2) False
   where flip_ b = fermionicQ ? b $ unsafeShiftL (b .&. 0x5555555555555555) 1 .|. -- 5 = 0101
                                    unsafeShiftR (b .&. 0xAAAAAAAAAAAAAAAA) 1     -- A = 1010
 
 {-# INLINE intersection'IntSet #-}
 -- modified from https://hackage.haskell.org/package/containers-0.6.1.1/docs/src/Data.IntSet.Internal.html#intersection
-intersection'IntSet :: (BitMap -> BitMap -> a -> a) -> IntSet -> IntSet -> a -> a
+intersection'IntSet :: (IntSet.BitMap -> IntSet.BitMap -> a -> a) -> IntSet -> IntSet -> a -> a
 intersection'IntSet f = intersection
   where intersection t1@(Bin p1 m1 l1 r1) t2@(Bin p2 m2 l2 r2) !x
           | shorter m1 m2  = intersection1
@@ -1104,7 +1129,7 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
       where g4s_ = [fst $ fromJust $ icomm g3 g3']
             simp = id -- not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
     unusedIs'    = maybe unusedIs `flip` ij3 $ \(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]
-    parity_stab' = (fermionicQ&&) $ assert (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
+    parity_stab' = (fermionicQ&&) $ assert "parity_stab'" (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
     g4_H0Gs'     = (maybe [] `flip` ij3) (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
     bifurcationQ = bifurcation == SB
     

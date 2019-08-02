@@ -571,7 +571,7 @@ check'G g = bosonicQ || even (IntSet.size $ is'G g) && (IntSet.findMin $ is'G g)
 
 {-# SCC calc_hash'G #-}
 calc_hash'G :: Sigma -> SigmaHash
-calc_hash'G = hash . toList'G
+calc_hash'G = hash . toList'G -- TODO speedup
 
 pos_i'G :: Index -> Pos
 pos_i'G | fermionicQ = id
@@ -709,59 +709,59 @@ intersection'IntSet f = intersection
         intFromNat :: Word -> Int
         intFromNat w = fromIntegral w
 
--- -- f and g are applied from left to right in the index order, but the integers are ordered like 0,1,2,-2,-1
--- {-# INLINE union'IntSet #-}
--- -- modified from https://hackage.haskell.org/package/containers-0.6.1.1/docs/src/Data.IntSet.Internal.html#union
--- union'IntSet :: (Either IntSet IntSet -> a -> a) -> (IntSet.BitMap -> IntSet.BitMap -> a -> a) -> IntSet -> IntSet -> a -> a
--- union'IntSet g f = union_
---   where union_ t1@(Bin p1 m1 l1 r1) t2@(Bin p2 m2 l2 r2) !x
---           | shorter m1 m2  = union1
---           | shorter m2 m1  = union2
---           | p1 == p2       = union_ r1 r2 $ union_ l1 l2 x
---           | otherwise      = link p1 t1 p2 t2 x
---           where
---             union1  | nomatch p2 p1 m1  = link p1 t1 p2 t2 x
---                     | zero p2 m1        = g (Left r1) $ union_ l1 t2 x
---                     | otherwise         = union_ r1 t2 $ g (Left l1) x
--- 
---             union2  | nomatch p1 p2 m2  = link p1 t1 p2 t2 x
---                     | zero p1 m2        = g (Right r2) $ union_ t1 l2 x
---                     | otherwise         = union_ t1 r2 $ g (Right l2) x
---         union_ t@(Bin _ _ _ _) (Tip kx bm) !x = insertBM kx bm False t x
---         union_ t@(Bin _ _ _ _) Nil !x = g (Left t) x
---         union_ (Tip kx bm) t !x = insertBM kx bm True t x
---         union_ Nil t !x = g (Right t) x
---         insertBM !kx !bm rQ t@(Bin p m l r) !x
---           | nomatch kx p m = rQ ? link kx (Tip kx bm) p t x
---                                 $ link p t kx (Tip kx bm) x
---           | zero kx m      = g (lr r) $ insertBM kx bm rQ l x
---           | otherwise      = insertBM kx bm rQ r $ g (lr l) x
---           where lr = rQ ? Right $ Left
---         insertBM kx bm rQ t@(Tip kx' bm') !x
---           | kx' == kx = rQ ? f bm  bm' x
---                            $ f bm' bm  x
---           | otherwise = rQ ? link kx (Tip kx bm) kx' t x
---                            $ link kx' t kx (Tip kx bm) x
---         insertBM kx bm rQ Nil !x = flip g x $ (rQ ? Left $ Right) $ Tip kx bm
---         link p1 t1 p2 t2 !x
---           | zero p1 m = g (Right t2) $ g (Left  t1) x
---           | otherwise = g (Left  t1) $ g (Right t2) x
---           where m = branchMask p1 p2
---         zero = IntSet.zero
---         nomatch i p m = (mask i m) /= p
---         shorter m1 m2 = (natFromInt m1) > (natFromInt m2)
---         mask i m = maskW (natFromInt i) (natFromInt m)
---         maskW i m = intFromNat (i .&. (complement (m-1) `xor` m))
---         branchMask p1 p2 = intFromNat (BitUtil.highestBitMask (natFromInt p1 `xor` natFromInt p2))
---         natFromInt :: Int -> Word
---         natFromInt i = fromIntegral i
---         intFromNat :: Word -> Int
---         intFromNat w = fromIntegral w
+-- f and g are applied from left to right in the index order, but the integers are ordered like 0,1,2,-2,-1
+{-# INLINE union'IntSet #-}
+-- modified from https://hackage.haskell.org/package/containers-0.6.1.1/docs/src/Data.IntSet.Internal.html#union
+union'IntSet :: (Either IntSet IntSet -> a -> a) -> (IntSet.BitMap -> IntSet.BitMap -> a -> a) -> IntSet -> IntSet -> a -> a
+union'IntSet g f = union_
+  where union_ t1@(Bin p1 m1 l1 r1) t2@(Bin p2 m2 l2 r2) !x
+          | shorter m1 m2  = union1
+          | shorter m2 m1  = union2
+          | p1 == p2       = union_ r1 r2 $ union_ l1 l2 x
+          | otherwise      = link p1 t1 p2 t2 x
+          where
+            union1  | nomatch p2 p1 m1  = link p1 t1 p2 t2 x
+                    | zero p2 m1        = g (Left r1) $ union_ l1 t2 x
+                    | otherwise         = union_ r1 t2 $ g (Left l1) x
+
+            union2  | nomatch p1 p2 m2  = link p1 t1 p2 t2 x
+                    | zero p1 m2        = g (Right r2) $ union_ t1 l2 x
+                    | otherwise         = union_ t1 r2 $ g (Right l2) x
+        union_ t@(Bin _ _ _ _) (Tip kx bm) !x = insertBM kx bm False t x
+        union_ t@(Bin _ _ _ _) Nil !x = g (Left t) x
+        union_ (Tip kx bm) t !x = insertBM kx bm True t x
+        union_ Nil t !x = g (Right t) x
+        insertBM !kx !bm rQ t@(Bin p m l r) !x
+          | nomatch kx p m = rQ ? link kx (Tip kx bm) p t x
+                                $ link p t kx (Tip kx bm) x
+          | zero kx m      = g (lr r) $ insertBM kx bm rQ l x
+          | otherwise      = insertBM kx bm rQ r $ g (lr l) x
+          where lr = rQ ? Right $ Left
+        insertBM kx bm rQ t@(Tip kx' bm') !x
+          | kx' == kx = rQ ? f bm  bm' x
+                           $ f bm' bm  x
+          | otherwise = rQ ? link kx (Tip kx bm) kx' t x
+                           $ link kx' t kx (Tip kx bm) x
+        insertBM kx bm rQ Nil !x = flip g x $ (rQ ? Left $ Right) $ Tip kx bm
+        link p1 t1 p2 t2 !x
+          | zero p1 m = g (Right t2) $ g (Left  t1) x
+          | otherwise = g (Left  t1) $ g (Right t2) x
+          where m = branchMask p1 p2
+        zero = IntSet.zero
+        nomatch i p m = (mask i m) /= p
+        shorter m1 m2 = (natFromInt m1) > (natFromInt m2)
+        mask i m = maskW (natFromInt i) (natFromInt m)
+        maskW i m = intFromNat (i .&. (complement (m-1) `xor` m))
+        branchMask p1 p2 = intFromNat (BitUtil.highestBitMask (natFromInt p1 `xor` natFromInt p2))
+        natFromInt :: Int -> Word
+        natFromInt i = fromIntegral i
+        intFromNat :: Word -> Int
+        intFromNat w = fromIntegral w
 
 {-# SCC multSigma #-} 
 multSigma :: Sigma -> Sigma -> (Int,Sigma)
 multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB `mod` 4, g_)
-                                      | otherwise = ((sF + sf g1_ + sf g2_ - sf (is'G g_)) `mod` 4, g_)
+                                      | otherwise = ((sF_new + sf g1_ + sf g2_ - sf (is'G g_)) `mod` 4, g_)
   where g_ = {-# SCC "g_" #-} sigma $ xor'IntSet g1_ g2_
         
         sB = {-# SCC "sB" #-} intersection'IntSet f g1_ g2_ 0
@@ -774,29 +774,27 @@ multSigma (Sigma g1_ _) (Sigma g2_ _) | bosonicQ  = (sB `mod` 4, g_)
         -- where union_  = IntSet.union g2_ $ IntSet.map flip_ g1_
         --       flip_ i = even i ? i+1 $ i-1
         
-        
         sf g = case IntSet.size g `mod` 4 of
                     0 -> 0
                     2 -> 1
                     _ -> error "multSigma"
         
-        sF = {-# SCC "sF_slow" #-} 2 * f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
-          where f :: Int -> [Int] -> [Int] -> Int -> Int
-                f n1 (i1:g1) (i2:g2) !s | i1 < i2   = f (n1-1)     g1  (i2:g2)   s
-                                        | i1 > i2   = f  n1    (i1:g1)     g2  $ s + boole (odd  n1)
-                                        | otherwise = f (n1-1)     g1      g2  $ s + boole (even n1)
-                f _ _ _ s = s
+        --sF_slow = {-# SCC "sF_slow" #-} 2 * f (IntSet.size g1_) (IntSet.toAscList g1_) (IntSet.toAscList g2_) 0
+        --  where f :: Int -> [Int] -> [Int] -> Int -> Int
+        --        f n1 (i1:g1) (i2:g2) !s | i1 < i2   = f (n1-1)     g1  (i2:g2)   s
+        --                                | i1 > i2   = f  n1    (i1:g1)     g2  $ s + boole (odd  n1)
+        --                                | otherwise = f (n1-1)     g1      g2  $ s + boole (even n1)
+        --        f _ _ _ s = s
         
-        --(0, sF_new) = {-# SCC "sF" #-} second (2*) $ union'IntSet g f g1_ g2_ (IntSet.size g1_, 0)
-        --  where g (Left  is) (!n1,!s) = (n1 - IntSet.size is, s)
-        --        g (Right is) (!n1,!s) = (n1, s + n1 * IntSet.size is)
-        --        f b1 b2 = go 0
-        --          where go :: Int -> (Int,Int) -> (Int,Int)
-        --                go 64   n1_s   = n1_s
-        --                go i  (!n1,!s) = go (i+n) $ (n1 - popCount (h b1),) $ (s+) $ popCount 
-        --                               $ (h b2 .&.) $ (xor $ h b1) $ (odd n1 ? complement $ id) $ multSigma_datF Array.! h b1
-        --                  where h b  = fromIntegral $ unsafeShiftR b i :: Word16
-        --                n = 16
+        (0, sF) = {-# SCC "sF" #-} second (2*) $ union'IntSet g f g1_ g2_ (IntSet.size g1_, 0)
+          where g (Left  is) (!n1,!s) = (n1 - IntSet.size is, s)
+                g (Right is) (!n1,!s) = (n1, s + n1 * IntSet.size is)
+                f b1 b2 = go 0
+                  where go :: Int -> (Int,Int) -> (Int,Int)
+                        go i  (!n1,!s) = i == 64 ? (n1,s) $ go (i+n) $ (n1 - popCount (h b1),) $ (s+) $ popCount 
+                                       $ (h b2 .&.) $ (xor $ h b1) $ (odd n1 ? complement $ id) $ multSigma_datF Array.! h b1
+                          where h b = fromIntegral $ unsafeShiftR b i :: Word16
+                        n = 16
 
 {-# SCC multSigma_datB #-} 
 multSigma_datB :: UArray (Word,Word) Int8
@@ -808,13 +806,13 @@ multSigma_datB = array'Array ((0,0), (2^n-1,2^n-1)) $ \(b1,b2) -> sum [dat0 Arra
                                               0, 1,-1, 0]
         n = 8
 
--- {-# SCC multSigma_datF #-} 
--- multSigma_datF :: UArray Word16 Word16
--- multSigma_datF = array'Array (0, complement 0) $ \b ->
---     let go i !b' | i == n-1  = b'
---                  | otherwise = go (i+1) $ not (testBit b i) ? b' $ xor b' $ unsafeShiftL (complement 0) (i+1)
---     in  go 0 0
---   where n = 16
+{-# SCC multSigma_datF #-} 
+multSigma_datF :: UArray Word16 Word16
+multSigma_datF = array'Array (0, complement 0) $ \b ->
+    let go i !b' | i == n-1  = b'
+                 | otherwise = go (i+1) $ not (testBit b i) ? b' $ xor b' $ unsafeShiftL (complement 0) (i+1)
+    in  go 0 0
+  where n = 16
 
 -- i [a,b]/2
 icomm :: Sigma -> Sigma -> Maybe SigmaTerm

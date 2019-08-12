@@ -1229,8 +1229,20 @@ rms'G :: Num a => Ham -> Sigma -> a
 rms'G stab g0 = boole $ null $ acommSigmas g0 stab
 
 -- for debugging
-entanglement :: Ls -> [Sigma] -> [(L,X)] -> Double
-entanglement ls stabs = regionEE_1d ls $ calcCutStabs $ fromList'Ham ls $ map (,1) stabs
+-- entanglement :: Ls -> [Sigma] -> [(L,X)] -> Double
+-- entanglement ls stabs = regionEE_1d ls $ calcCutStabs $ fromList'Ham ls $ map (,1) stabs
+
+-- entanglement entropy: arguments: list of region sizes and stabilizer Ham
+ee0d :: Ham -> [X] -> [(X,Double,Double)]
+ee0d stab x0s = map (\(x0,ees) -> uncurry (x0,,) $ meanError ees) $ ee0d_ stab x0s
+
+ee0d_ :: Ham -> [X] -> [(X,[Double])]
+ee0d_ stab x0s = [(x0, [ee_local stab [x*lY+y, (x+x0)*lY+y]
+                       | x <- [0..head ls-1],
+                         y <- [0..lY-1]])
+                 | x0 <- x0s]
+  where ls = ls'Ham stab
+        lY = product $ tail ls
 
 -- entanglement entropy: arguments: list of region sizes and stabilizer Ham
 ee1d :: Ls -> ([X] -> [Sigma]) -> [L] -> [X] -> [(L,X,Double,Double)]
@@ -1242,40 +1254,51 @@ ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0
                             | l0 <- l0s,
                               x0 <- x0s]
 
+ee_local :: Ham -> [X] -> Double
+ee_local stab is = maskedStabEntanglement
+    [sigma g'
+    | g <- map is'G $ toList $ NestedFold $ nearbySigmas' is stab,
+      let g' = IntSet.intersection g is',
+      not (IntSet.null g') && g /= g']
+  where is' = IntSet.fromList $ not bosonicQ ? is $ concatMap (\i -> [2*i,2*i+1]) is
+
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
 {-# SCC regionEE_1d #-}
 regionEE_1d :: Ls -> ([X] -> [Sigma]) -> [(L,X)] -> Double
-regionEE_1d ls cutStabs lxs_ = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
-                             $ bosonicQ ? sparse_rankZ2 acommMatB
-                                        $ runST $ dense_rankZ2 =<< acommMatF
+regionEE_1d ls cutStabs lxs_ = maskedStabEntanglement
+    [sigma g'
+    | g <- map is'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
+      let g' = IntSet.unions $ map (selRegion g . both (*lYB)) lxs,
+      not (IntSet.null g') && g /= g']
   where lsB = ls ++ (bosonicQ ? [2] $ [])
         nB  = product lsB
         lYB = product $ tail lsB
         lxs = map (second $ flip mod $ head ls) lxs_
-        {-# SCC regionStabs #-}
-        regionStabs = [sigma g'
-                      | g <- map is'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
-                        let g' = IntSet.unions $ map (selRegion g . both (*lYB)) lxs,
-                        not (IntSet.null g') && g /= g']
         -- intersect g with region [i..i+l-1]
         selRegion :: IntSet -> (Int,Int) -> IntSet
         selRegion g (l,i) = (if i+l<nB then                fst . IntSet.split (i+l)
                                        else IntSet.union $ fst $ IntSet.split (i+l-nB) g)
                           $ snd $ IntSet.split (i-1) g
-        {-# SCC acommMatB #-}
+
+{-# SCC maskedStabEntanglement #-}
+maskedStabEntanglement :: [Sigma] -> Double
+maskedStabEntanglement stabs = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
+                             $ bosonicQ ? sparse_rankZ2 acommMatB
+                                        $ runST $ dense_rankZ2 =<< acommMatF
+  where {-# SCC acommMatB #-}
         acommMatB :: IntMap IntSet
-        acommMatB = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip [1..] regionStabs, g2 <- gs'] IntMap.empty
+        acommMatB = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip [1..] stabs, g2 <- gs'] IntMap.empty
           where add i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
                 f ((i,gi), (j,gj)) = acommQ gi gj ? add i j . add j i $ id
         {-# SCC acommMatF #-}
         acommMatF :: ST s [STBitArray s Int]
-        acommMatF = do let n = length regionStabs
+        acommMatF = do let n = length stabs
                            bounds = (-n, n-1)
                        mat <- (Array.listArray bounds <$>) $ sequence $ replicate (2*n) $ STBitArray.newArray bounds False :: ST s (Array Int (STBitArray s Int))
                        let add    i j = STBitArray.writeArray (mat Array.! i) j True
                            addF q i j = q ? (add i j >> add j i >> add (-i-1) (-j-1) >> add (-j-1) (-i-1)) $ return ()
                        sequence_ [ addF bothOdd i (-j-1) >> addF (i /= j && (bothOdd `xor` acomm0)) i j
-                                 | gs'@((i,gi,ni):_) <- tails $ zip3 [0..] regionStabs $ map size'G regionStabs,
+                                 | gs'@((i,gi,ni):_) <- tails $ zip3 [0..] stabs $ map size'G stabs,
                                    (j,gj,nj) <- gs',
                                    let acomm0  = acommQ gi gj -- true if odd # of overlapping majorana
                                        bothOdd = odd ni && odd nj ]
@@ -1502,7 +1525,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190802.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190812.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
@@ -1620,6 +1643,10 @@ main = do
         lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
                                        justIf (x>=l) (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
+    
+    when (length ls > 1) $ do
+      putStr "entanglement entropy 0d: " -- [(region separation, entanglement entropy, error)]
+      print $ ee0d (stab'RG rg) $ 0:xs_
     
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ mapMeanError entanglement_data

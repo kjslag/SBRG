@@ -508,6 +508,17 @@ sparse_rankZ2 = go 0 . fromSymmetric'Z2Mat
 --         go !n (row:rows) = go (n+1) $ map (xor row `applyIf` flip testBit j) rows
 --           where j = head $ filter (testBit row) [0..]
 
+-- using zipWithTo
+-- {-# SCC dense_rankZ2 #-}
+-- dense_rankZ2 :: [STBitArray s Int] -> ST s Int
+-- dense_rankZ2 = go 0
+--   where go :: Int -> [STBitArray s Int] -> ST s Int
+--         go  n []          = return n
+--         go !n (row0:rows) = maybe (go n rows) f =<< STBitArray.elemIndex True row0
+--           where f j = traverse_ g rows >> go (n+1) rows
+--                   where g row = do q <- STBitArray.readArray row j
+--                                    q ? STBitArray.zipWithTo row xor row0 row $ return ()
+
 {-# SCC dense_rankZ2 #-}
 dense_rankZ2 :: [STBitArray s Int] -> ST s Int
 dense_rankZ2 = go 0
@@ -517,6 +528,15 @@ dense_rankZ2 = go 0
           where f j = go (n+1) =<< traverse g rows
                   where g row = do q <- STBitArray.readArray row j
                                    q ? STBitArray.zipWith xor row0 row $ return row
+
+-- this ends up being slower, probably due to the strange ordering due to lazyness
+-- {-# SCC dense_rankZ2 #-}
+-- dense_rankZ2 :: [BitArray Int] -> Int
+-- dense_rankZ2 = go 0
+--   where go :: Int -> [BitArray Int] -> Int
+--         go  n []          = n
+--         go !n (row0:rows) = maybe (go n rows) `flip` Array.elemIndex True row0 $ \j ->
+--                             go (n+1) $ (xor row0 `applyIf` (Array.! j)) <$> rows
 
 -- boolsToInteger :: [Bool] -> Integer
 -- boolsToInteger = foldl' (\x b -> 2*x + boole b) 0
@@ -1208,6 +1228,10 @@ runRG = until (IntSet.null . unusedIs'RG) rgStep
 rms'G :: Num a => Ham -> Sigma -> a
 rms'G stab g0 = boole $ null $ acommSigmas g0 stab
 
+-- for debugging
+entanglement :: Ls -> [Sigma] -> [(L,X)] -> Double
+entanglement ls stabs = regionEE_1d ls $ calcCutStabs $ fromList'Ham ls $ map (,1) stabs
+
 -- entanglement entropy: arguments: list of region sizes and stabilizer Ham
 ee1d :: Ls -> ([X] -> [Sigma]) -> [L] -> [X] -> [(L,X,Double,Double)]
 ee1d ls cutStabs l0s x0s = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ ls cutStabs l0s x0s
@@ -1268,7 +1292,7 @@ calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
     modx   = (`mod` lx)
     modx_2 = (`mod` lx_2)
     
-    localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty & flip $ cutStabs0) $ nub $ map modx_2 xs
+    localStabs' xs = Set.toList $ Set.unions $ map (IntMap.findWithDefault Set.empty `flip` cutStabs0) $ nub $ map modx_2 xs
     localStabs, nonlocalStabs :: [Sigma]
     [localStabs, nonlocalStabs] = [toList $ NestedFold $ cgs stab | cgs <- [lcgs'Ham, nlcgs'Ham]]
     -- local stabilizers cut by [x..x+lx/2-1] where 0 <= x < lx/2 due to symmetry
@@ -1361,7 +1385,7 @@ model_gen MajChainF ls [j1,j2,k] = basic_genF ls gen
 model_gen MajSquareF ls [ly_]     = model_gen MajSquareF ls [ly_,1,0]
 model_gen MajSquareF ls [ly_,q,t] = basic_genF (ls++[ly]) gen
   where ly = round $ toDouble ly_
-        gen [x,y] (rq:rt1:rt2:rs) = ([ ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq), ([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], t*rt2) ], rs)
+        gen [x,y] (rq:rt1:rt2:rs) = ([ ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq), ([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], t*rt2) ], t==0 ? rt1:rt2:rs $ rs)
         gen _ _ = error "MajSquareF"
 #endif
 model_gen _ _ _ = error "model_gen"
@@ -1494,7 +1518,7 @@ main = do
   
   when detailedQ $ do
     putStr "Hamiltonian: "
-    print $ ham'RG rg0
+    print $ toDescList'Ham $ ham'RG rg0
   
   let n_missing = length $ takeWhile ((==0) . snd) $ stab0'RG rg
       cut_pow2 = reverse . if' (cut_powQ && not small_lsQ) (filter $ isPow2 . fst) id . zip [1..]
@@ -1543,7 +1567,7 @@ main = do
   
   when detailedQ $ do
     putStr "stabilizers: "
-    print $ stab'RG rg
+    print $ toDescList'Ham $ stab'RG rg
     
     putStr "stabilizers0: "
     print $ stab0'RG rg
@@ -1553,7 +1577,7 @@ main = do
     
     case diag'RG rg of
       Just diag -> do putStr "effective Hamiltonian: "
-                      print $ Map.toList $ diag
+                      print $ sortOn (abs . snd) $ Map.toList $ diag
       _         -> return ()
   
   putStr "small stabilizers: "

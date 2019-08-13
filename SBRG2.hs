@@ -1531,7 +1531,7 @@ main = do
       calc_EEQ       = True
     --calc_aCorrQ    = False
     --calc_aCorr'Q   = False
-      cut_powQ       = not detailedQ
+      cut_powQ       = not $ detailedQ || small_lsQ
       bifurcationQ   = bifurcation == SB
       keep_diagQ     = not bifurcationQ || detailedQ
       entanglement_wo_missing = not bosonicQ && show model == "MajSquareF" && (length couplings < 3 || couplings!!2 == 0)
@@ -1554,7 +1554,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190813.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190813.1" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
   putStr   "flags:              "; print $ flags
   putStr   "model:              "; print $ show model

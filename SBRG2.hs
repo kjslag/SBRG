@@ -104,7 +104,7 @@ todo = undefined
 
 assert :: String -> Bool -> a -> a
 assert _ True  = id
-assert s False = error s
+assert s False = error $ "\n" ++ s
 
 asserting :: String -> (a -> Bool) -> a -> a
 asserting s q x = assert s (q x) x
@@ -605,7 +605,7 @@ sigma :: IntSet -> Sigma
 sigma ik = Sigma ik $ calc_hash'G ik
 
 check'G :: Sigma -> Bool
-check'G g = bosonicQ || even (IntSet.size $ is'G g) && (IntSet.findMin $ is'G g) >= 0 -- multSigma probably assumes is'G are non-negative
+check'G g = bosonicQ || even (IntSet.size $ is'G g) && (maybe True ((>=0) . fst) $ IntSet.minView $ is'G g) -- multSigma probably assumes is'G are non-negative
 
 {-# SCC calc_hash'G #-}
 calc_hash'G :: IntSet -> SigmaHash
@@ -662,7 +662,9 @@ toList'GT :: SigmaTerm -> ([Index],F)
 toList'GT = first toList'G
 
 fromList'G :: [Index] -> Sigma
-fromList'G is = asserting "fromList'G check'G" check'G . sigma . asserting "fromList'G unique" ((== length is) . IntSet.size) $ IntSet.fromList is
+fromList'G is = asserting ("fromList'G check'G: " ++ show is) check'G . sigma 
+              . asserting "fromList'G unique" ((== length is) . IntSet.size)
+              $ IntSet.fromList is
 
 fromListB'G :: [(Pos,Int)] -> Sigma
 fromListB'G = assert "fromListB'G" bosonicQ $ fromList'G . concat . map f
@@ -1125,11 +1127,17 @@ init'RG ls0 seed ham = rg
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 {-# SCC rgStep #-}
-rgStep :: RG -> RG
+rgStep :: RG -> Maybe RG
 rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms n_rg_terms bifurcation randGen)
-  | IntSet.null unusedIs = rg
-  | otherwise            = myForce rg'
+  | doneQ     = Nothing
+  | otherwise = Just $ myForce rg'
   where
+    doneQ | bosonicQ  = IntSet.null unusedIs
+          | otherwise = case compare (IntSet.size unusedIs) $ not parity_stab ? 0 $ bifurcationQ ? 2 $ 1 of
+                             GT -> False
+                             EQ -> True
+                             LT -> error "doneQ"
+    
     _G1           :: [(SigmaTerm,SigmaTerm)] -- [(icomm g3' gT/h3', -gT)] where gT is in Sigma
     _G2, _G3, _G4 :: [SigmaTerm]
     g3        = fromMaybe g3_ $ (fst<$>) $ listToMaybe $ toDescList'Ham ham1
@@ -1148,7 +1156,8 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
                                  in  (Just (i3, j3), simp $ fromList'G [i3], g4s_)
       where g4s_ = [fst $ fromJust $ icomm g3 g3']
             simp = id -- not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
-    unusedIs'    = maybe unusedIs `flip` ij3 $ \(i3,j3) -> unusedIs `IntSet.difference` IntSet.fromList [i3,j3]
+    unusedIs'    = IntSet.difference unusedIs $ IntSet.fromList $ maybe (maybe [] pure parity_i3) (\(i3,j3) -> [i3,j3]) ij3
+    parity_i3    = isJust ij3 || bifurcationQ ? Nothing $ Just $ IntSet.findMin $ assert "parity_i3" (is'G g3' == unusedIs) unusedIs
     parity_stab' = (fermionicQ&&) $ assert "parity_stab'" (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
     g4_H0Gs'     = (maybe [] `flip` ij3) (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
     bifurcationQ = bifurcation == SB
@@ -1160,13 +1169,18 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     
     {-# SCC proj #-}
     proj :: [SigmaTerm] -> [SigmaTerm]
-    proj = bifurcationQ ? id $ map projGS_
-      where projGS_ gT@(g,c) = maybe gT (, (h3' <= 0) == groundStateQ ? c $ -c) $ case ij3 of
-                                 Just (i3,_) -> justIf (i3 `IntSet.member` is'G g) $ sigma $ is'G g IntSet.\\ is'G g3'
-                                 Nothing     -> justIf (is'G g == unusedIs) $ fromList'G []
+    proj = map $ \gT -> fromMaybe gT $ proj_ gT
+    
+    proj_ :: SigmaTerm -> Maybe SigmaTerm
+    proj_ gT@(g,c) = bifurcationQ ? Nothing $ justIf (i3 `IntSet.member` is'G g) $ not bosonicQ ? gT'
+                   $ {-asserting "proj_" (==gT')-} (sigma $ is'G g IntSet.\\ is'G g3', (h3'<=0) == groundStateQ ? c $ -c)
+      where gT'  = fromJust $ acomm'GT g3'' gT
+            g3'' = (h3'<=0) == groundStateQ ? (g3',1) $ (g3',-1)
+            i3   = case ij3 of Just (i3_,_) -> i3_
+                               Nothing      -> fromJust parity_i3
     
     (groundStateQ, randGen') = case bifurcation of
-                                    SB   -> (undefined, randGen)
+                                    SB -> (undefined, randGen)
                                     GS -> (True, randGen)
                                     RS -> Random.random randGen
     
@@ -1176,10 +1190,12 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     h3'            = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
                   -- find sigma matrices that overlap with g3'
                   -- split into commuting matrices (_comm) and anticommuting commutators (_G1)
-    (_comm,_G1)    = {-# SCC "diag',_G1" #-} maybe (toList'Ham ham2, []) `flip` ij3
+    (_comm,_G1)    = {-# SCC "_comm,_G1" #-} maybe (toList'Ham ham2, []) `flip` ij3
                    $ \(i3,j3) -> partitionEithers $ map (\gT -> maybe (Left gT) (Right . (,scale'GT (-1) gT)) $ icomm'GT (g3',recip h3') gT)
                                $ toList'MAS $ nearbySigmas' (nub $ map pos_i'G [i3,j3]) ham2 -- the minus is because we apply icomm twice
     (diag',offdiag)= partition isDiag _comm
+    {-# SCC proj_offdiag #-}
+    proj_offdiag   = bifurcationQ ? [] $ mapMaybe (\(gT,gT') -> (gT,) <$> gT') $ zip offdiag $ map proj_ offdiag
     {-# SCC ham3 #-} -- remove anticommuting matrices from ham
     ham3           = flip deleteSigmas'Ham ham2 $ map (fst . snd) _G1
     {-# SCC _G_Delta #-} -- [Sigma, Delta]
@@ -1189,8 +1205,8 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     offdiag_error  = maybe 0 (/abs h3') $ headMay $ map (abs . snd) $ filter (isJust . fst)
                    $ mergeSortedWith (AbsF . snd) $ map fst _G_Delta
     {-# SCC ham4 #-} -- remove diagonal matrices from ham and project to ground state if not bifurcationQ
-    ham4           = (bifurcationQ ? id $ (+# proj offdiag))
-                   $ flip deleteSigmas'Ham ham3 $ map fst $ bifurcationQ ? diag' $ _comm
+    ham4           = (+# map snd proj_offdiag)
+                   $ flip deleteSigmas'Ham ham3 $ map fst $ map fst proj_offdiag ++ diag'
     {-# SCC _G2 #-} -- distribute _G1 = [(icomm g3' gT/h3' = i[g3',gT]/2h3', -gT)] where gT is in Sigma
                     -- _G2 = g3' G^2/2h3' where G = Sigma
     _G2            = proj $ catMaybes -- $ myParListChunk 64
@@ -1221,7 +1237,7 @@ stabilizers :: RG -> Ham
 stabilizers rg = c4s'Ham (-1) (g4s'RG rg) $ fromList'Ham (ls'RG rg) $ stab0'RG rg
 
 runRG :: RG -> RG
-runRG = until (IntSet.null . unusedIs'RG) rgStep
+runRG rg = maybe rg runRG $ rgStep rg
 
 -- return: RMS of <g> over all eigenstates
 -- Ham: the stabilizer Ham
@@ -1527,10 +1543,11 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190812.0" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190813.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
+  putStr   "Ls':                "; print ls
   putStr   "couplings:          "; print $ (read $ args!!4 :: [Double]) -- print couplings
   putStr   "Γ:                  "; print gamma
   putStr   "seed:               "; print seed
@@ -1552,6 +1569,8 @@ main = do
   putStr "missing stabilizers: "
   print $ n_missing
 --mapM_ print $ map (toLists'GT ls) $ take 6 ordered_stab
+  
+  assert ("RG length: " ++ show (length $ stab0'RG rg)) (length (stab0'RG rg) == (bosonicQ ? n $ n//2)) $ return ()
   
   putStr "RG CPU time:  "
   rg_cpu_time <- CPUTime.getCPUTime

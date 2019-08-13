@@ -1425,7 +1425,9 @@ model_gen MajChainF ls [j1,j2,k] = basic_genF ls gen
 model_gen MajSquareF ls [ly_]     = model_gen MajSquareF ls [ly_,1,0]
 model_gen MajSquareF ls [ly_,q,t] = basic_genF (ls++[ly]) gen
   where ly = round $ toDouble ly_
-        gen [x,y] (rq:rt1:rt2:rs) = ([ ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq), ([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], ly>1?t*rt2$0) ], t==0 ? rt1:rt2:rs $ rs)
+        gen [x,y] (rq:rt1:rt2:rs) = (take_ [([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], t*rt2), ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq)], t==0 ? rt1:rt2:rs $ rs)
+          where take_ | ly == 1 || (ly == 2 && y > 0) = take 1
+                      | otherwise = id
         gen _ _ = error "MajSquareF"
 #endif
 model_gen _ _ _ = error "model_gen"

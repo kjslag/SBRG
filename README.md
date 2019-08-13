@@ -10,7 +10,7 @@ Another implementation: https://github.com/EverettYou/SBRG
 
 Compiling SBRG requires GHC and some Haskell libraries. The simplest way to get set up is to install the [Haskell Platform](https://www.haskell.org/platform/). Then install the dependancies using
 
-    $ cabal install  clock hashable ieee754 NumInstances random safe  strict parallel  bitwise
+    $ cabal v2-install --lib  clock hashable ieee754 NumInstances random safe  strict parallel  bitwise
 
 SBRG can then be built from the makefile:
 

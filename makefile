@@ -6,7 +6,7 @@ profile: SBRGp BSBRG2p FSBRG2p
 # GHCp=stack ghc --profile -- -rtsopts -prof
 
 GHC=ghc
-GHCp=ghc -rtsopts -prof
+GHCp=$GHC -rtsopts -prof
 
 SBRG: SBRG.hs
 	$(GHC) SBRG

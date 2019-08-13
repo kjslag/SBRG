@@ -1,7 +1,7 @@
 -- author: Kevin Slagle
 -- github.com/kjslag/SBRG
 
--- cabal --enable-profiling install  clock hashable ieee754 NumInstances random safe  bitwise
+-- cabal --enable-profiling v2-install --lib  clock hashable ieee754 NumInstances random safe  bitwise
 -- optional: parallel
 
 {-# LANGUAGE CPP, TupleSections, BangPatterns, MagicHash, MultiParamTypeClasses, FlexibleInstances #-} -- OverloadedLists

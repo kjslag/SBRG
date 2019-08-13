@@ -1265,15 +1265,15 @@ ee_local stab is = maskedStabEntanglement
 -- entanglement entropy of the regions (l,x) -> [x..x+l-1]
 {-# SCC regionEE_1d #-}
 regionEE_1d :: Ls -> ([X] -> [Sigma]) -> [(L,X)] -> Double
-regionEE_1d ls cutStabs lxs_ = maskedStabEntanglement
-    [sigma g'
-    | g <- map is'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
-      let g' = IntSet.unions $ map (selRegion g . both (*lYB)) lxs,
-      not (IntSet.null g') && g /= g']
+regionEE_1d ls cutStabs lxs_ = maskedStabEntanglement regionStabs
   where lsB = ls ++ (bosonicQ ? [2] $ [])
         nB  = product lsB
         lYB = product $ tail lsB
         lxs = map (second $ flip mod $ head ls) lxs_
+        regionStabs = [sigma g'
+                      | g <- map is'G $ cutStabs $ concatMap (\(l,x) -> [x,x+l]) lxs,
+                        let g' = IntSet.unions $ map (selRegion g . both (*lYB)) lxs,
+                        not (IntSet.null g') && g /= g']
         -- intersect g with region [i..i+l-1]
         selRegion :: IntSet -> (Int,Int) -> IntSet
         selRegion g (l,i) = (if i+l<nB then                fst . IntSet.split (i+l)
@@ -1282,10 +1282,11 @@ regionEE_1d ls cutStabs lxs_ = maskedStabEntanglement
 
 {-# SCC maskedStabEntanglement #-}
 maskedStabEntanglement :: [Sigma] -> Double
-maskedStabEntanglement stabs = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
-                             $ bosonicQ ? sparse_rankZ2 acommMatB
-                                        $ runST $ dense_rankZ2 =<< acommMatF
-  where {-# SCC acommMatB #-}
+maskedStabEntanglement stabs0 = ((bosonicQ ? 0.5 $ 0.25)*) $ fromIntegral
+                              $ bosonicQ ? sparse_rankZ2 acommMatB
+                                         $ runST $ dense_rankZ2 =<< acommMatF
+  where stabs = nubOrd stabs0
+        {-# SCC acommMatB #-}
         acommMatB :: IntMap IntSet
         acommMatB = foldl'_ f [(g1,g2) | g1:gs' <- tails $ zip [1..] stabs, g2 <- gs'] IntMap.empty
           where add i j = IntMap.insertWith IntSet.union i $ IntSet.singleton j
@@ -1506,6 +1507,7 @@ main = do
       cut_powQ       = not detailedQ
       bifurcationQ   = bifurcation == SB
       keep_diagQ     = not bifurcationQ || detailedQ
+      entanglement_wo_missing = not bosonicQ && show model == "MajSquareF" && (length couplings < 3 || couplings!!2 == 0)
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
     --max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1526,7 +1528,7 @@ main = do
   unless (0 < n) $ undefined
   
   putStr   "version:            "; putStrLn "190812.0" -- major . year month day . minor
-  putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum"]
+  putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
   putStr   "couplings:          "; print $ (read $ args!!4 :: [Double]) -- print couplings
@@ -1633,16 +1635,14 @@ main = do
     all_histos "stabilizer"      (log_ns     , log_ns     ) log_ns         $ Map.toList $ gc'Ham $ stab'RG rg
     all_histos "diag"            (small_ns 32, small_ns 16) log_ns & mapM_ $ Map.toList <$> diag'RG rg
   
-  let cutStabs = calcCutStabs $ stab'RG rg
-  
   when calc_EEQ $ do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
-        entanglement_data = ee1d_ ls cutStabs xs_     (small_lsQ ? [0] $ 0:xs_)
-            ++ (small_lsQ ? ee1d_ ls cutStabs xs_pow2 xs_ $ [])
-        entanglement_map = Map.fromListWith undefined $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
-        lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
-                      \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
-                                       justIf (x>=l) (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
+        entanglement_data_ cutStabs = ee1d_ ls cutStabs xs_     (small_lsQ ? [0] $ 0:xs_)
+                      ++ (small_lsQ ? ee1d_ ls cutStabs xs_pow2 xs_ $ [])
+        entanglement_data = entanglement_data_ $ calcCutStabs
+                          $ not entanglement_wo_missing ? stab'RG rg
+                          $ deleteSigmas'Ham `flip` (stab'RG rg)
+                          $ map fst $ filter ((==0) . snd) $ toList'Ham $ stab'RG rg
     
     when (length ls > 1) $ do
       putStr "entanglement entropy 0d: " -- [(region separation, entanglement entropy, error)]
@@ -1650,6 +1650,11 @@ main = do
     
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ mapMeanError entanglement_data
+    
+    let entanglement_map = Map.fromListWith undefined $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
+        lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
+                      \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
+                                       justIf (x>=l) (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
     
     putStr "long range mutual information: "
     print $ lrmi_data

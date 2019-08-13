@@ -1639,14 +1639,14 @@ main = do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
         entanglement_data_ cutStabs = ee1d_ ls cutStabs xs_     (small_lsQ ? [0] $ 0:xs_)
                       ++ (small_lsQ ? ee1d_ ls cutStabs xs_pow2 xs_ $ [])
-        entanglement_data = entanglement_data_ $ calcCutStabs
-                          $ not entanglement_wo_missing ? stab'RG rg
-                          $ deleteSigmas'Ham `flip` (stab'RG rg)
-                          $ map fst $ filter ((==0) . snd) $ toList'Ham $ stab'RG rg
+        entanglement_data  = entanglement_data_ $ calcCutStabs entanglement_stabs
+        entanglement_stabs = not entanglement_wo_missing ? stab'RG rg
+                           $ deleteSigmas'Ham `flip` (stab'RG rg)
+                           $ map fst $ filter ((==0) . snd) $ toList'Ham $ stab'RG rg
     
     when (length ls > 1) $ do
       putStr "entanglement entropy 0d: " -- [(region separation, entanglement entropy, error)]
-      print $ ee0d (stab'RG rg) $ 0:xs_
+      print $ ee0d entanglement_stabs $ 0:xs_
     
     putStr "entanglement entropy: " -- [(region size, region separation, entanglement entropy, error)]
     print $ mapMeanError entanglement_data

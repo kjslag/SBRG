@@ -34,6 +34,7 @@ import Control.Monad
 import Control.Monad.ST
 import Data.Bifunctor
 import Data.Bits
+import Data.Char (isAlpha)
 import Data.Containers.ListUtils
 import Data.Either
 import Data.Function
@@ -190,12 +191,16 @@ instance (Foldable t1, Foldable t2) => Foldable (NestedFold t1 t2) where
   foldr  f x = foldr  (flip $ foldr  f) x . getNestedFold
   foldl' f x = foldl' (       foldl' f) x . getNestedFold
 
-getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7) => [String] -> IO (t1,t2,t3,t4,t5,t6,t7)
-getArgs7 defaults = do
-  args <- getArgs
+getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7) => [String] -> [Char] -> IO (t1,t2,t3,t4,t5,t6,t7, ([String],[Char]), [Bool])
+getArgs7 defaults flags0 = do
+  args0 <- getArgs
   let n = 7
+      (args,flags) = second concat $ partitionEithers $ map f args0
+      f ('-':s) | not (null s) && all isAlpha s = Right $ asserting "invalid flag" (`elem` flags0) <$> s
+      f s = Left s
+      flags' = map (`elem` flags) flags0
       [x1,x2,x3,x4,x5,x6,x7] = args ++ drop (length defaults + length args - n) defaults
-  return (readNote "1" x1, readNote "2" x2, readNote "3" x3, readNote "4" x4, readNote "5" x5, readNote "6" x6, readNote "7" x7)
+  return (readNote "1" x1, readNote "2" x2, readNote "3" x3, readNote "4" x4, readNote "5" x5, readNote "6" x6, readNote "7" x7, (args, nub flags), flags')
 
 infixl 1 `applyIf`
 applyIf :: (a -> a) -> (a -> Bool) -> a -> a
@@ -1165,7 +1170,7 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     {-# SCC isDiag #-}
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = unusedIs' `IntSet.disjoint` is'G g
-                || fermionicQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g
+                || fermionicQ && bifurcationQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g
     
     {-# SCC proj #-}
     proj :: [SigmaTerm] -> [SigmaTerm]
@@ -1175,7 +1180,7 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     proj_ gT@(g,c) = bifurcationQ ? Nothing $ justIf (i3 `IntSet.member` is'G g) $ not bosonicQ ? gT'
                    $ {-asserting "proj_" (==gT')-} (sigma $ is'G g IntSet.\\ is'G g3', (h3'<=0) == groundStateQ ? c $ -c)
       where gT'  = fromJust $ acomm'GT g3'' gT
-            g3'' = (h3'<=0) == groundStateQ ? (g3',1) $ (g3',-1)
+            g3'' = (g3', (h3'<=0) == groundStateQ ? 1 $ -1)
             i3   = case ij3 of Just (i3_,_) -> i3_
                                Nothing      -> fromJust parity_i3
     
@@ -1422,10 +1427,11 @@ model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB 
 model_gen MajChainF ls [j1,j2,k] = basic_genF ls gen
   where gen [x] (rj:rk:rs) = ([ ([[x],[x+1]], (even x ? j1 $ j2)*rj), ([[x],[x+1],[x+2],[x+3]], k*rk) ], rs)
         gen _ _ = error "MajChainF"
-model_gen MajSquareF ls [ly_]     = model_gen MajSquareF ls [ly_,1,0]
-model_gen MajSquareF ls [ly_,q,t] = basic_genF (ls++[ly]) gen
+model_gen MajSquareF  ls   [ly_]     = model_gen MajSquareF ls [ly_,1,0]
+model_gen MajSquareF [lx]  [ly_,q,t] = model_gen MajSquareF [lx,ly] [q,t]
   where ly = round $ toDouble ly_
-        gen [x,y] (rq:rt1:rt2:rs) = (take_ [([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], t*rt2), ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq)], t==0 ? rt1:rt2:rs $ rs)
+model_gen MajSquareF ls@[_,ly] [q,t] = basic_genF ls gen
+  where gen [x,y] (rq:rt1:rt2:rs) = (take_ [([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], t*rt2), ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq)], t==0 ? rt1:rt2:rs $ rs)
           where take_ | ly == 1 || (ly == 2 && y > 0) = take 1
                       | otherwise = id
         gen _ _ = error "MajSquareF"
@@ -1497,31 +1503,34 @@ main :: IO ()
 main = do
   startTime <- Clock.getTime Clock.Monotonic
   
-  let small_lsQ               = False
+  let small_lsQ_default       = False
       max_rg_terms_default    = "32"
     --max_wolff_terms_default = "4"
   
+  let options = [('s',"don't alter seed"), ('d',"detailed output"), ('l', "disable ln2 system sizes")]
+  
   args <- getArgs
   when (length args < 5) $ do
-    putStrLn $ "usage: SBRG random-seed model bifurcation [" ++ if' small_lsQ "" "ln2 " ++ "system lengths] [coupling constants] gamma"
-            ++ " {max RG terms = " ++ max_rg_terms_default ++ "}" -- {max wolff terms = " ++ max_wolff_terms_default ++ "}"
+    putStrLn $ "usage: SBRG random-seed model bifurcation [" ++ if' small_lsQ_default "" "ln2 " ++ "system lengths] [coupling constants] {gamma = 1}"
+            ++ " {max RG terms = " ++ max_rg_terms_default ++ "} {options...}" -- {max wolff terms = " ++ max_wolff_terms_default ++ "}"
+    putStr   $ "options: "
+    putStrLn $ intercalate "\n         " $ map (\(f,s) -> '-':f:[] ++ "   " ++ s) options
     putStr   $ "available models: "
     print    $ enumFrom $ (toEnum 0 :: Model)
     putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1,1]")
     exitFailure
   
-  (seed,model,bifurcation,ln2_ls,couplings,gamma,max_rg_terms_) <- getArgs7 ["1", max_rg_terms_default]
-    :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int)
+  (seed, model, bifurcation, ln2_ls, couplings, gamma, max_rg_terms_, (args',flags), [noAlterSeedQ, detailedQ, small_lsQ])
+    <- getArgs7 ["1", max_rg_terms_default] $ map fst options
+    :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int, ([String],[Char]), [Bool])
   
 --   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
 --     :: IO (Int, Model, [Int], [F], Double, Int, Int)
   
-  let alterSeedQ     = True
-      allStabsQ      = detailedQ
+  let allStabsQ      = detailedQ
       calc_EEQ       = True
     --calc_aCorrQ    = False
     --calc_aCorr'Q   = False
-      detailedQ      = False
       cut_powQ       = not detailedQ
       bifurcationQ   = bifurcation == SB
       keep_diagQ     = not bifurcationQ || detailedQ
@@ -1534,7 +1543,7 @@ main = do
       ls       = ls'RG rg0
       n        = n'RG rg0
       l_1d     = dim == 1 ? Just n $ Nothing
-      seed'    = not alterSeedQ ? hash seed $ hash $ show (seed, model, ln2_ls, couplings, gamma)
+      seed'    = noAlterSeedQ ? hash seed $ hash $ show (seed, model, ln2_ls, couplings, gamma)
       rg0      = init'RG ls0 seed' $ init_generic'Ham seed' $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
@@ -1547,10 +1556,11 @@ main = do
   
   putStr   "version:            "; putStrLn "190813.0" -- major . year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
+  putStr   "flags:              "; print $ flags
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
   putStr   "Ls':                "; print ls
-  putStr   "couplings:          "; print $ (read $ args!!4 :: [Double]) -- print couplings
+  putStr   "couplings:          "; print $ (read $ args'!!4 :: [Double]) -- print couplings
   putStr   "Γ:                  "; print gamma
   putStr   "seed:               "; print seed
   putStr   "seed':              "; print seed'

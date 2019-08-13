@@ -1531,7 +1531,7 @@ main = do
       calc_EEQ       = True
     --calc_aCorrQ    = False
     --calc_aCorr'Q   = False
-      cut_powQ       = not $ detailedQ || small_lsQ
+      cut_powQ       = not detailedQ
       bifurcationQ   = bifurcation == SB
       keep_diagQ     = not bifurcationQ || detailedQ
       entanglement_wo_missing = not bosonicQ && show model == "MajSquareF" && (length couplings < 3 || couplings!!2 == 0)
@@ -1554,7 +1554,7 @@ main = do
   
   unless (0 < n) $ undefined
   
-  putStr   "version:            "; putStrLn "190813.1" -- major . year month day . minor
+  putStr   "version:            "; putStrLn "190813.1" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
   putStr   "flags:              "; print $ flags
   putStr   "model:              "; print $ show model
@@ -1575,7 +1575,7 @@ main = do
     print $ toDescList'Ham $ ham'RG rg0
   
   let n_missing = length $ takeWhile ((==0) . snd) $ stab0'RG rg
-      cut_pow2 = reverse . if' (cut_powQ && not small_lsQ) (filter $ isPow2 . fst) id . zip [1..]
+      cut_pow2 = reverse . if' cut_powQ (filter $ isPow2 . fst) id . zip [1..]
       ordered_stab = map (c4s (-1) (g4s'RG rg)) $ stab0'RG rg
   
   putStr "missing stabilizers: "

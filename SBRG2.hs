@@ -53,6 +53,7 @@ import Safe
 import Safe.Exact
 import System.Environment
 import System.Exit (exitFailure)
+import Text.Printf (printf)
 
 import qualified System.CPUTime as CPUTime
 import qualified System.Clock as Clock
@@ -1101,7 +1102,8 @@ data RG = RG {
   max_rg_terms'RG    :: !(Maybe Int),
   n_rg_terms'RG      :: ![Int],
   bifurcation'RG     :: !Bifurcation,
-  randGen'RG         :: !Random.StdGen}
+  randGen'RG         :: !Random.StdGen,
+  verbose'RG         :: !Bool }
   deriving (Show)
 
 instance MySeq RG where
@@ -1131,15 +1133,22 @@ wolff_errors'RG = map fst3 . rights . g4_H0Gs'RG
 init'RG :: [Int] -> Int -> Ham -> RG
 init'RG ls0 seed ham = rg
   where rg = RG ls0 ham [Map.size $ gc'Ham ham] (Just Map.empty) (IntSet.fromDistinctAscList [0..((bosonicQ ? 2 $ 1) * n'Ham ham - 1)])
-             [] False [] (Just []) [] [] (stabilizers rg) Nothing [] SB (Random.mkStdGen $ hashWithSalt seed "init'RG")
+             [] False [] (Just []) [] [] (stabilizers rg) Nothing [] SB (Random.mkStdGen $ hashWithSalt seed "init'RG") False
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 {-# SCC rgStep #-}
 rgStep :: RG -> Maybe RG
-rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms n_rg_terms bifurcation randGen)
+rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms n_rg_terms bifurcation randGen verbose)
   | doneQ     = Nothing
-  | otherwise = Just $ myForce rg'
+  | otherwise = (not (verbose && isPow2' 3 progress) ? id
+                  $ trace $ "verbose: \"RG " ++ show progress ++ "/" ++ show progress_end ++
+                            "=" ++ printf "%.2g" ((100::Double) * fromIntegral progress / fromIntegral progress_end) ++
+                            "%, ham_size=" ++ show (head $ ham_sizes'RG rg') ++ "\"")
+                $ Just $ myForce rg'
   where
+    (progress,progress_end) = (n - IntSet.size unusedIs', n)
+      where n = (bosonicQ ? 2 $ 1) * product (ls'Ham ham1)
+    
     doneQ | bosonicQ  = IntSet.null unusedIs
           | otherwise = case compare (IntSet.size unusedIs) $ not parity_stab ? 0 $ bifurcationQ ? 2 $ 1 of
                              GT -> False
@@ -1510,7 +1519,7 @@ main = do
       max_rg_terms_default    = "32"
     --max_wolff_terms_default = "4"
   
-  let options = [('s',"don't alter seed"), ('d',"detailed output"), ('l', "disable ln2 system sizes")]
+  let options = [('s',"don't alter seed"), ('d',"detailed output"), ('l', "disable ln2 system sizes"), ('v', "verbose")]
   
   args <- getArgs
   when (length args < 5) $ do
@@ -1523,7 +1532,7 @@ main = do
     putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1,1]")
     exitFailure
   
-  (!seed, !model, !bifurcation, !ln2_ls, !couplings, !gamma, !max_rg_terms_, args', (flags,unused_flags), [!noAlterSeedQ, !detailedQ, !small_lsQ])
+  (!seed, !model, !bifurcation, !ln2_ls, !couplings, !gamma, !max_rg_terms_, args', (flags,unused_flags), [!noAlterSeedQ, !detailedQ, !small_lsQ, !verbose])
     <- getArgs7 ["1", max_rg_terms_default] $ map fst options
     :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int, [String], ([Char],[Char]), [Bool])
   
@@ -1555,7 +1564,8 @@ main = do
       rg       = runRG $ rg0 { diag'RG            = keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
                                bifurcation'RG     = bifurcation,
-                               max_rg_terms'RG    = max_rg_terms }
+                               max_rg_terms'RG    = max_rg_terms,
+                               verbose'RG         = verbose }
       xs_pow2  = filter isPow2 [1..head ls//2]
       xs_      = maybe (small_lsQ ? [1..head ls//2] $ xs_pow2) (\pn -> filter (isPow2' pn) [1..head ls//2]) xs_pow_n
   
@@ -1576,6 +1586,8 @@ main = do
 --  putStr "max Anderson terms: "; print max_wolff_terms
   putStr   "float type:         "; print type_F
   putStr   "bifurcation:        "; print $ show bifurcation
+  
+  rg `seq` return ()
   
   when detailedQ $ do
     putStr "Hamiltonian: "

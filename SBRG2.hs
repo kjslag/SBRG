@@ -34,7 +34,7 @@ import Control.Monad
 import Control.Monad.ST
 import Data.Bifunctor
 import Data.Bits
-import Data.Char (isAlpha)
+import Data.Char (isAlpha,isAlphaNum)
 import Data.Containers.ListUtils
 import Data.Either
 import Data.Function
@@ -191,16 +191,16 @@ instance (Foldable t1, Foldable t2) => Foldable (NestedFold t1 t2) where
   foldr  f x = foldr  (flip $ foldr  f) x . getNestedFold
   foldl' f x = foldl' (       foldl' f) x . getNestedFold
 
-getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7) => [String] -> [Char] -> IO (t1,t2,t3,t4,t5,t6,t7, ([String],[Char]), [Bool])
+getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7) => [String] -> [Char] -> IO (t1,t2,t3,t4,t5,t6,t7, [String], ([Char],[Char]), [Bool])
 getArgs7 defaults flags0 = do
   args0 <- getArgs
   let n = 7
       (args,flags) = second concat $ partitionEithers $ map f args0
-      f ('-':s) | not (null s) && all isAlpha s = Right $ asserting "invalid flag" (`elem` flags0) <$> s
+      f ('-':s) | not (null s) && all isAlphaNum s = Right s
       f s = Left s
       flags' = map (`elem` flags) flags0
       [x1,x2,x3,x4,x5,x6,x7] = args ++ drop (length defaults + length args - n) defaults
-  return (readNote "1" x1, readNote "2" x2, readNote "3" x3, readNote "4" x4, readNote "5" x5, readNote "6" x6, readNote "7" x7, (args, nub flags), flags')
+  return (readNote "1" x1, readNote "2" x2, readNote "3" x3, readNote "4" x4, readNote "5" x5, readNote "6" x6, readNote "7" x7, args, partition (`elem` flags0) $ nub flags, flags')
 
 infixl 1 `applyIf`
 applyIf :: (a -> a) -> (a -> Bool) -> a -> a
@@ -265,6 +265,9 @@ sq x = x*x
 
 isPow2 :: Int -> Bool
 isPow2 x = popCount x == 1
+
+isPow2' :: Int -> Int -> Bool
+isPow2' n x = countTrailingZeros x + countLeadingZeros x - finiteBitSize x >= -n
 
 mean :: Floating f => [f] -> f
 mean = (\(n,x) -> x/fromIntegral n) . sum . map (1::Int,)
@@ -1520,9 +1523,9 @@ main = do
     putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1,1]")
     exitFailure
   
-  (seed, model, bifurcation, ln2_ls, couplings, gamma, max_rg_terms_, (args',flags), [noAlterSeedQ, detailedQ, small_lsQ])
+  (!seed, !model, !bifurcation, !ln2_ls, !couplings, !gamma, !max_rg_terms_, args', (flags,unused_flags), [!noAlterSeedQ, !detailedQ, !small_lsQ])
     <- getArgs7 ["1", max_rg_terms_default] $ map fst options
-    :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int, ([String],[Char]), [Bool])
+    :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int, [String], ([Char],[Char]), [Bool])
   
 --   (seed,model,ln2_ls,couplings,gamma,max_rg_terms_,max_wolff_terms_) <- getArgs7 [max_rg_terms_default, max_wolff_terms_default]
 --     :: IO (Int, Model, [Int], [F], Double, Int, Int)
@@ -1534,6 +1537,10 @@ main = do
       cut_powQ       = not detailedQ
       bifurcationQ   = bifurcation == SB
       keep_diagQ     = not bifurcationQ || detailedQ
+      xs_pow_n       = case unused_flags of
+                            []  -> Nothing
+                            [c] -> Just $ readNote "xs_pow_n" [c]
+                            _   -> error "xs_pow_n"
       entanglement_wo_missing = not bosonicQ && show model == "MajSquareF" && (length couplings < 3 || couplings!!2 == 0)
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
@@ -1550,13 +1557,13 @@ main = do
                                bifurcation'RG     = bifurcation,
                                max_rg_terms'RG    = max_rg_terms }
       xs_pow2  = filter isPow2 [1..head ls//2]
-      xs_      = small_lsQ   ? [1..head ls//2] $ xs_pow2
+      xs_      = maybe (small_lsQ ? [1..head ls//2] $ xs_pow2) (\pn -> filter (isPow2' pn) [1..head ls//2]) xs_pow_n
   
   unless (let n_ = product $ map toInteger ls0 in n_ == toInteger (product ls0) && 0 < n_ && n_ < 2^(30::Int)) $ error $ "ls error: " ++ show ls0
   
-  putStr   "version:            "; putStrLn "190813.2" -- year month day . minor
+  putStr   "version:            "; putStrLn "190814.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
-  putStr   "flags:              "; print $ flags
+  putStr   "flags:              "; print $ flags ++ unused_flags
   putStr   "model:              "; print $ show model
   putStr   "Ls:                 "; print ls0
   putStr   "Ls':                "; print ls

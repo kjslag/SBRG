@@ -1163,14 +1163,14 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
             simp = id -- not bifurcationQ ? id $ sigma . IntSet.union (is'G g3 `IntSet.difference` unusedIs) . is'G
     unusedIs'    = IntSet.difference unusedIs $ IntSet.fromList $ maybe (maybe [] pure parity_i3) (\(i3,j3) -> [i3,j3]) ij3
     parity_i3    = isJust ij3 || bifurcationQ ? Nothing $ Just $ IntSet.findMin $ assert "parity_i3" (is'G g3' == unusedIs) unusedIs
-    parity_stab' = (fermionicQ&&) $ assert "parity_stab'" (not $ isNothing ij3 && parity_stab) $ isNothing ij3 || parity_stab
+    parity_stab' = (fermionicQ&&) $ assert "parity_stab'" (not $ isNothing ij3 && parity_stab) $ parity_stab || isNothing ij3
     g4_H0Gs'     = (maybe [] `flip` ij3) (\(i3,j3) -> [Right (rss $ map (snd . fst) _G1, i3, j3)]) ++ map Left (reverse g4s)
     bifurcationQ = bifurcation == SB
     
     {-# SCC isDiag #-}
     isDiag :: SigmaTerm -> Bool
     isDiag (g,_) = unusedIs' `IntSet.disjoint` is'G g
-                || fermionicQ && bifurcationQ && parity_stab' && unusedIs' `IntSet.isSubsetOf` is'G g
+                || fermionicQ && (bifurcationQ && parity_stab' || isNothing ij3) && unusedIs' `IntSet.isSubsetOf` is'G g
     
     {-# SCC proj #-}
     proj :: [SigmaTerm] -> [SigmaTerm]
@@ -1554,7 +1554,7 @@ main = do
   
   unless (let n_ = product $ map toInteger ls0 in n_ == toInteger (product ls0) && 0 < n_ && n_ < 2^(30::Int)) $ error $ "ls error: " ++ show ls0
   
-  putStr   "version:            "; putStrLn "190813.1" -- year month day . minor
+  putStr   "version:            "; putStrLn "190813.2" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
   putStr   "flags:              "; print $ flags
   putStr   "model:              "; print $ show model

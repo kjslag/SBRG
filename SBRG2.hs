@@ -1552,7 +1552,7 @@ main = do
       xs_pow2  = filter isPow2 [1..head ls//2]
       xs_      = small_lsQ   ? [1..head ls//2] $ xs_pow2
   
-  unless (0 < n) $ undefined
+  unless (let n_ = product $ map toInteger ls0 in n_ == toInteger (product ls0) && 0 < n_ && n_ < 2^(30::Int)) $ error $ "ls error: " ++ show ls0
   
   putStr   "version:            "; putStrLn "190813.1" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]

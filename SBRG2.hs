@@ -20,7 +20,7 @@
 -- default:
 #ifndef FERMIONIC
 #ifndef BOSONIC
-#define FERMIONIC
+#define BOSONIC
 #endif
 #endif
 
@@ -192,13 +192,14 @@ instance (Foldable t1, Foldable t2) => Foldable (NestedFold t1 t2) where
   foldr  f x = foldr  (flip $ foldr  f) x . getNestedFold
   foldl' f x = foldl' (       foldl' f) x . getNestedFold
 
-getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7) => [String] -> [Char] -> IO (t1,t2,t3,t4,t5,t6,t7, [String], ([Char],[Char]), [Bool])
+getArgs7 :: (Read t1, Read t2, Read t3, Read t4, Read t5, Read t6, Read t7)
+         => [String] -> [Char] -> IO (t1,t2,t3,t4,t5,t6,t7, [String], ([Char],[Char]), [Bool])
 getArgs7 defaults flags0 = do
   args0 <- getArgs
   let n = 7
-      (args,flags) = second concat $ partitionEithers $ map f args0
-      f ('-':s) | not (null s) && all isAlphaNum s = Right s
+      f ('-':s) | not (null s) && isAlpha (head s) && all isAlphaNum (tail s) = Right s
       f s = Left s
+      (args,flags) = second concat $ partitionEithers $ map f args0
       flags' = map (`elem` flags) flags0
       [x1,x2,x3,x4,x5,x6,x7] = args ++ drop (length defaults + length args - n) defaults
   return (readNote "1" x1, readNote "2" x2, readNote "3" x3, readNote "4" x4, readNote "5" x5, readNote "6" x6, readNote "7" x7, args, partition (`elem` flags0) $ nub flags, flags')
@@ -1277,10 +1278,12 @@ ee0d_ stab x0s = [(x0, [ee_local stab [x*lY+y, (x+x0)*lY+y]
   where ls = ls'Ham stab
         lY = product $ tail ls
 
--- entanglement entropy: arguments: list of region sizes and stabilizer Ham
+-- entanglement entropy:
+-- arguments: list of region sizes and stabilizer Ham
 ee1d :: Ls -> ([X] -> [Sigma]) -> [L] -> [X] -> [(L,X,Double,Double)]
 ee1d ls cutStabs l0s x0s = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees) $ ee1d_ ls cutStabs l0s x0s
 
+-- the [Double] in the output is a list over the `product ls` different positions
 ee1d_ :: Ls -> ([X] -> [Sigma]) -> [L] -> [X] -> [(L,X,[Double])]
 ee1d_ ls cutStabs l0s x0s = [(l0, x0, [regionEE_1d ls cutStabs $ nub [(l0,x),(l0,x+x0)]
                                       | x <- [0..head ls-1]])
@@ -1392,7 +1395,7 @@ init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ conc
 
 data Model =
 #ifdef BOSONIC
-  Ising | XYZ | MajSquare | MajSquareOpen
+  Ising | XYZ | MajSquare | MajSquareOpen | MajSquareOpenX
 #else
   MajChainF | MajSquareF
 #endif
@@ -1421,7 +1424,7 @@ model_gen XYZ ls j | length j == 3 = basic_genB ls gen
   where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
           ([ ([([x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3] ], rs)
         gen _ _ = error "XYZ"
-model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB (ls++[ly0]) gen
+model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen, MajSquareOpenX] = basic_genB (ls++[ly0]) gen
   where ly  = round $ toDouble ly_
         ly0 = (ly-1)//2
         oQ  = boole $ model == MajSquareOpen
@@ -1431,7 +1434,8 @@ model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen] = basic_genB 
                | z == 0     = [([x,y0],3)]
                | otherwise  = [([x,y0],1),([x,y0+1],1)]
           where (y0,z) = divMod y 2
-        gen [x,0] rs0 = ([(gg x y ++ gg (x+1) y,r) | (y,r) <- zip [0..] rs], rs')
+        gen [x,0] rs0 | model /= MajSquareOpenX || x < head ls-1
+                      = ([(gg x y ++ gg (x+1) y,r) | (y,r) <- zip [0..] rs], rs')
           where (rs,rs') = splitAt (ly-oQ) rs0
         gen [_,_] rs = ([], rs)
         gen _ _ = error "MajSquare"
@@ -1529,6 +1533,7 @@ main = do
     putStrLn $ intercalate "\n         " $ map (\(f,s) -> '-':f:[] ++ "   " ++ s) options
     putStr   $ "available models: "
     print    $ enumFrom $ (toEnum 0 :: Model)
+    putStrLn $ "available bifurcations: SB (spectrum bifurcation), GS (ground state), RS (random state)"
     putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1,1]")
     exitFailure
   
@@ -1546,11 +1551,11 @@ main = do
       cut_powQ       = not detailedQ
       bifurcationQ   = bifurcation == SB
       keep_diagQ     = not bifurcationQ || detailedQ
-      xs_pow_n       = case unused_flags of
+      xs_pow_n       = case unused_flags of -- TODO document
                             []  -> Nothing
                             [c] -> Just $ readNote "xs_pow_n" [c]
                             _   -> error "xs_pow_n"
-      entanglement_wo_missing = not bosonicQ && show model == "MajSquareF" && (length couplings < 3 || couplings!!2 == 0)
+      entanglement_wo_missing = not bosonicQ && show model == "MajSquareF" && (length couplings < 3 || couplings!!2 == 0) -- calculate entanglement after dropping the missing stabilizer guesses
   
   let max_rg_terms    = justIf' (>=0) max_rg_terms_
     --max_wolff_terms = justIf' (>=0) max_wolff_terms_
@@ -1689,7 +1694,7 @@ main = do
     let mapMeanError = map (\(l0,x0,ees) -> uncurry (l0,x0,,) $ meanError ees)
         entanglement_data_ cutStabs = ee1d_ ls cutStabs xs_     (small_lsQ ? [0] $ 0:xs_)
                       ++ (small_lsQ ? ee1d_ ls cutStabs xs_pow2 xs_ $ [])
-        entanglement_data  = entanglement_data_ $ calcCutStabs entanglement_stabs
+        entanglement_data  = entanglement_data_ $ calcCutStabs entanglement_stabs :: [(L, X, [Double])]
         entanglement_stabs = not entanglement_wo_missing ? stab'RG rg
                            $ deleteSigmas'Ham `flip` (stab'RG rg)
                            $ map fst $ filter ((==0) . snd) $ toList'Ham $ stab'RG rg
@@ -1702,12 +1707,21 @@ main = do
     print $ mapMeanError entanglement_data
     
     let entanglement_map = Map.fromListWith undefined $ map (\(l,x,es) -> ((l,x),es)) entanglement_data
-        lrmi_data = mapMeanError $ flip mapMaybe entanglement_data $
+        lrmi_data = flip mapMaybe entanglement_data $
                       \(l,x,es) -> let es0 = entanglement_map Map.! (l,0) in
                                        justIf (x>=l) (l, x, zipWith3 (\e0 e0' e -> e0 + e0' - e) es0 (rotateLeft x es0) es)
     
     putStr "long range mutual information: "
-    print $ lrmi_data
+    print $ mapMeanError $ lrmi_data
+    
+#ifdef BOSONIC
+    when (model == MajSquareOpenX) $ do
+      putStr "LRMI from 0: "
+      let ee  = ee_local entanglement_stabs
+          ee0 = ee [0]
+      print $ [(x, ee0 + ee [x] - ee [0,x]) | x <- [1..the ls0-1]]
+    --print $ mapMaybe (\(l,x,ees) -> justIf (l==1) (x, head ees)) lrmi_data
+#endif
   
 --   let aCorr  = uncurry3 anderson_corr  corr_z_xs_ggs $ stab'RG rg
 --       aCorr' = uncurry3 anderson_corr' corr_z_xs_ggs           rg

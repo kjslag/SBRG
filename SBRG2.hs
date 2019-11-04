@@ -1367,9 +1367,8 @@ calcCutStabs stab = \xs -> localStabs' xs ++ nonlocalStabs
                    | otherwise  = region0 (x',x)
       where dx = modx $ x' - x
 
-type Rands = [F]
-randoms :: Int -> Rands
-randoms seed = map toF $ Random.randoms $ Random.mkStdGen seed
+randoms :: Int -> [Double]
+randoms seed = Random.randoms $ Random.mkStdGen seed
 
 type X  = Int
 type Xs = [X]
@@ -1386,11 +1385,12 @@ xs_pos :: Ls -> Pos -> Xs
 xs_pos ls i0 = map snd $ init $ scanr (\l (i,_) -> divMod i l) (i0,0) ls
 
 -- site -> randoms -> (SigmaTerms, unused_randoms)
+type Rands = [F]
 type ModelGen = Xs -> Rands -> ([SigmaTerm], Rands)
 
-init_generic'Ham :: Int -> (Ls,ModelGen) -> Ham
-init_generic'Ham seed (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ concat
-                                $ flip State.evalState (randoms seed) $
+init_generic'Ham :: Rands -> (Ls,ModelGen) -> Ham
+init_generic'Ham rands (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ concat
+                                $ flip State.evalState rands $
                                   mapM (State.state . model) $ mapM (\l -> [0..l-1]) ls
 
 data Model =
@@ -1523,11 +1523,11 @@ main = do
       max_rg_terms_default    = "32"
     --max_wolff_terms_default = "4"
   
-  let options = [('s',"don't alter seed"), ('d',"detailed output"), ('l', "disable ln2 system sizes"), ('v', "verbose")]
+  let options = [('s',"don't alter seed"), ('d',"detailed output"), ('l', "disable ln2 system sizes"), ('v', "verbose"), ('c', "cut disorder to [0.1,1]^Γ range")]
   
   args <- getArgs
   when (length args < 5) $ do
-    putStrLn $ "usage: SBRG random-seed model bifurcation [" ++ if' small_lsQ_default "" "ln2 " ++ "system lengths] [coupling constants] {gamma = 1}"
+    putStrLn $ "usage: SBRG random-seed model bifurcation [" ++ if' small_lsQ_default "" "ln2 " ++ "system lengths] [coupling constants] {Γ = 1}"
             ++ " {max RG terms = " ++ max_rg_terms_default ++ "} {options...}" -- {max wolff terms = " ++ max_wolff_terms_default ++ "}"
     putStr   $ "options: "
     putStrLn $ intercalate "\n         " $ map (\(f,s) -> '-':f:[] ++ "   " ++ s) options
@@ -1537,7 +1537,7 @@ main = do
     putStrLn $ "example: SBRG 0 " ++ (bosonicQ ? "Ising SB [6] [1,1,1]" $ "MajChainF SB [6] [1,1,1]")
     exitFailure
   
-  (!seed, !model, !bifurcation, !ln2_ls, !couplings, !gamma, !max_rg_terms_, args', (flags,unused_flags), [!noAlterSeedQ, !detailedQ, !small_lsQ, !verbose])
+  (!seed, !model, !bifurcation, !ln2_ls, !couplings, !gamma, !max_rg_terms_, args', (flags,unused_flags), [!noAlterSeedQ, !detailedQ, !small_lsQ, !verbose, !cutDisorder])
     <- getArgs7 ["1", max_rg_terms_default] $ map fst options
     :: IO (Int, Model, Bifurcation, [Int], [F], Double, Int, [String], ([Char],[Char]), [Bool])
   
@@ -1565,7 +1565,8 @@ main = do
       n        = n'RG rg0
       l_1d     = dim == 1 ? Just n $ Nothing
       seed'    = noAlterSeedQ ? hash seed $ hash $ show (seed, model, ln2_ls, couplings, gamma)
-      rg0      = init'RG ls0 seed' $ init_generic'Ham seed' $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
+      rands    = toF <$> (not cutDisorder ? id $ \r -> 0.9*r+0.1) <$> randoms seed'
+      rg0      = init'RG ls0 seed' $ init_generic'Ham rands $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
                                bifurcation'RG     = bifurcation,

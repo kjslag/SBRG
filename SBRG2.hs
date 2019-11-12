@@ -1577,7 +1577,7 @@ main = do
   
   unless (let n_ = product $ map toInteger ls0 in n_ == toInteger (product ls0) && 0 < n_ && n_ < 2^(30::Int)) $ error $ "ls error: " ++ show ls0
   
-  putStr   "version:            "; putStrLn "190814.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "191119.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
   putStr   "flags:              "; print $ flags ++ unused_flags
   putStr   "model:              "; print $ show model
@@ -1700,7 +1700,7 @@ main = do
                            $ deleteSigmas'Ham `flip` (stab'RG rg)
                            $ map fst $ filter ((==0) . snd) $ toList'Ham $ stab'RG rg
     
-    when (length ls > 1) $ do
+    when (length ls0 > 1) $ do
       putStr "entanglement entropy 0d: " -- [(region separation, entanglement entropy, error)]
       print $ ee0d entanglement_stabs $ 0:xs_
     

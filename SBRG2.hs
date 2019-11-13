@@ -1592,7 +1592,7 @@ main = do
   
   unless (let n_ = product $ map toInteger ls0 in n_ == toInteger (product ls0) && 0 < n_ && n_ < 2^(30::Int)) $ error $ "ls error: " ++ show ls0
   
-  putStr   "version:            "; putStrLn "191119.0" -- year month day . minor
+  putStr   "version:            "; putStrLn "191113.0" -- year month day . minor
   putStr   "warnings:           "; print $ catMaybes [justIf fastSumQ "fastSum", justIf entanglement_wo_missing "entanglement w/o missing"]
   putStr   "flags:              "; print $ flags ++ unused_flags
   putStr   "model:              "; print $ show model

@@ -14,7 +14,7 @@
 
 -- ghci -fbreak-on-error
 -- :set -fbreak-on-error
--- :set args 1 XYZ [4] [1,1,1] 1
+-- :set args 0 Ising SB [6] [1,1,1]
 -- :trace main
 
 -- default:
@@ -895,6 +895,9 @@ acomm'GT (g1,c1) (g2,c2) = scale'GT (c1*c2) <$> acomm g1 g2
 c4 :: Sigma -> Sigma -> Maybe SigmaTerm
 c4 g4 g = icomm g g4
 
+c4s_ :: [Sigma] -> Sigma -> Sigma
+c4s_ g4s = fst . c4s 1 g4s . (,1)
+
 c4s :: F -> [Sigma] -> SigmaTerm -> SigmaTerm
 c4s dir g4s gT = foldl' (\gT'@(!g',!c') g4 -> maybe gT' (scale'GT $ dir*c') $ c4 g4 g') gT g4s
 
@@ -1097,6 +1100,8 @@ data RG = RG {
   parity_stab'RG     :: !Bool,             -- RG found the parity stab
   offdiag_errors'RG  :: ![F],
   trash'RG           :: !(Maybe [[SigmaTerm]]),
+  symmetries'RG      ::  [Sigma],          -- in new basis
+  extra_stabs'RG     ::  [Int],
   stab0'RG           :: ![SigmaTerm],      -- stabilizers in new basis
   stab1'RG           :: ![SigmaTerm],      -- stabilizers in current basis
   stab'RG            ::  Ham,              -- stabilizers in old basis
@@ -1114,6 +1119,7 @@ instance MySeq RG where
            . seq' (head . g4_H0Gs'RG)
            . seq' (head . offdiag_errors'RG)
            . seq' ((head<$>) . trash'RG)
+        -- . seq' (headDef 0 . extra_stabs'RG)
            . seq' (head . stab0'RG)
            . seq' (head . stab1'RG)
            . seq' (head . n_rg_terms'RG)
@@ -1131,15 +1137,16 @@ g4s'RG = lefts . g4_H0Gs'RG
 wolff_errors'RG :: RG -> [F]
 wolff_errors'RG = map fst3 . rights . g4_H0Gs'RG
 
-init'RG :: [Int] -> Int -> Ham -> RG
-init'RG ls0 seed ham = rg
+init'RG :: [Int] -> Int -> [Sigma] -> Ham -> RG
+init'RG ls0 seed symmetries ham = assert "init'RG: ham isn't symmetric" symmetricQ rg
   where rg = RG ls0 ham [Map.size $ gc'Ham ham] (Just Map.empty) (IntSet.fromDistinctAscList [0..((bosonicQ ? 2 $ 1) * n'Ham ham - 1)])
-             [] False [] (Just []) [] [] (stabilizers rg) Nothing [] SB (Random.mkStdGen $ hashWithSalt seed "init'RG") False
+             [] False [] (Just []) symmetries [] [] [] (stabilizers rg) Nothing [] SB (Random.mkStdGen $ hashWithSalt seed "init'RG") False
+        symmetricQ = and [not $ acommQ g s | g <- Map.keys $ gc'Ham ham, s <- symmetries]
 
 -- g ~ sigma matrix, _G ~ Sigma, i ~ site index, h ~ energy coefficient
 {-# SCC rgStep #-}
 rgStep :: RG -> Maybe RG
-rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors trash stab0 stab1 _ max_rg_terms n_rg_terms bifurcation randGen verbose)
+rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors trash symmetries extra_stabs stab0 stab1 _ max_rg_terms n_rg_terms bifurcation randGen verbose)
   | doneQ     = Nothing
   | otherwise = (not (verbose && isPow2' 3 progress) ? id
                   $ trace $ "verbose: \"RG " ++ show progress ++ "/" ++ show progress_end ++
@@ -1158,8 +1165,9 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     
     _G1           :: [(SigmaTerm,SigmaTerm)] -- [(icomm g3' gT/h3', -gT)] where gT is in Sigma
     _G2, _G3, _G4 :: [SigmaTerm]
-    g3        = fromMaybe g3_ $ (fst<$>) $ listToMaybe $ toDescList'Ham ham1
-      where g3_ = fromList'G $ take 2 $ IntSet.toList unusedIs
+    (g3,n_extra) = fromMaybe (headNote "sym missing g3_" g3_, length g3_ - 1) $ ((,-1) . fst <$>) $ listToMaybe $ toDescList'Ham ham1
+      where g3_ = filter symQ $ map fromList'G $ (not fermionicQ ? id $ filter $ even . length) $ tail $ subsequences $ IntSet.toList unusedIs
+            symQ g = not $ any (acommQ g) symmetries
     h3        = fromMaybe 0 $ Map.lookup g3 $ gc'Ham ham1
     i3_1      = IntSet.toList $ unusedIs `IntSet.intersection` is'G g3
     i3_2      = IntSet.toList $ unusedIs `IntSet.difference`   is'G g3
@@ -1205,7 +1213,7 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
     {-# SCC ham2 #-} -- apply c4 transformation
     ham2           = c4s'Ham 1 g4s ham1
     {-# SCC h3' #-} -- get g3' coefficient
-    h3'            = fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
+    h3'            = assert "g4s" (c4s_ g4s g3 == g3') $ fromMaybe 0 $ Map.lookup g3' $ gc'Ham ham2
                   -- find sigma matrices that overlap with g3'
                   -- split into commuting matrices (_comm) and anticommuting commutators (_G1)
     (_comm,_G1)    = {-# SCC "_comm,_G1" #-} maybe (toList'Ham ham2, []) `flip` ij3
@@ -1245,6 +1253,8 @@ rgStep rg@(RG _ ham1 ham_sizes diag unusedIs g4_H0Gs parity_stab offdiag_errors 
               parity_stab'RG    = parity_stab',
               offdiag_errors'RG = offdiag_error : offdiag_errors,
               trash'RG          = (trash':) <$> trash,
+              symmetries'RG     = map (c4s_ g4s) symmetries,
+              extra_stabs'RG    = (n_extra >= 0 ? [n_extra] $ []) ++ extra_stabs,
               stab0'RG          = (g3', h3'):stab0,
               stab1'RG          = (g3 , h3 ):stab1,
               stab'RG           = stabilizers rg',
@@ -1387,6 +1397,7 @@ xs_pos ls i0 = map snd $ init $ scanr (\l (i,_) -> divMod i l) (i0,0) ls
 -- site -> randoms -> (SigmaTerms, unused_randoms)
 type Rands = [F]
 type ModelGen = Xs -> Rands -> ([SigmaTerm], Rands)
+type Symmetries = [Sigma]
 
 init_generic'Ham :: Rands -> (Ls,ModelGen) -> Ham
 init_generic'Ham rands (ls,model) = fromList'Ham ls $ filter ((/=0) . snd) $ concat
@@ -1403,28 +1414,32 @@ data Model =
 
 #ifdef FERMIONIC
 type RawSigmaTermF  = ([Xs],F)
-basic_genF :: Ls -> (Xs -> Rands -> ([RawSigmaTermF], Rands)) -> (Ls,ModelGen)
-basic_genF ls gen = (ls, (\(gs,rs) -> ([fromList'GT (map (pos_xs ls) g,c) | (g,c) <- gs], rs)) .* gen)
+basic_genF :: Ls -> [[Xs]] -> (Xs -> Rands -> ([RawSigmaTermF], Rands)) -> (Symmetries,(Ls,ModelGen))
+basic_genF ls sym gen = (fromList'G . to_i <$> sym, ) (ls, (\(gs,rs) -> ([fromList'GT (to_i g,c) | (g,c) <- gs], rs)) .* gen)
+  where to_i = map $ pos_xs ls
 #else
 type RawSigmaTermB = ([(Xs,Int)],F)
-basic_genB :: Ls -> (Xs -> Rands -> ([RawSigmaTermB], Rands)) -> ([Int],ModelGen)
-basic_genB ls gen = (ls, (\(gs,rs) -> ([fromListB'GT (map (first $ pos_xs ls) g,c) | (g,c) <- gs], rs)) .* gen)
+basic_genB :: Ls -> [[(Xs,Int)]] -> (Xs -> Rands -> ([RawSigmaTermB], Rands)) -> (Symmetries,([Int],ModelGen))
+basic_genB ls sym gen = (fromListB'G . to_i <$> sym, ) (ls, (\(gs,rs) -> ([fromListB'GT (to_i g,c) | (g,c) <- gs], rs)) .* gen)
+  where to_i = map $ first $ pos_xs ls
 #endif
 
-model_gen :: Model -> Ls -> [F] -> (Ls,ModelGen)
+model_gen :: Model -> Ls -> [F] -> (Symmetries,(Ls,ModelGen))
 #ifdef BOSONIC
-model_gen Ising ls [j,k,h] = basic_genB ls gen
+model_gen Ising ls [j,k,h] = basic_genB ls [sym] gen
   where gen [x] (rj:rk:rh:rs) =
           ([ ([([x],3),([x+1],3)],j*rj), ([([x],1),([x+1],1)],k*rk), ([([x],1)],h*rh) ], rs)
         gen [x,y] (rjx:rjy:rkx:rky:rh:rs) =
           ([ ([([x,y],3),([x+1,y  ],3)],j*rjx), ([([x,y],1),([x+1,y  ],1)],k*rkx), ([([x,y],1)],h*rh),
              ([([x,y],3),([x  ,y+1],3)],j*rjy), ([([x,y],1),([x  ,y+1],1)],k*rky) ], rs)
         gen _ _ = error "Ising"
-model_gen XYZ ls j | length j == 3 = basic_genB ls gen
+        sym = map (,1) $ mapM (\l -> [0..l-1]) ls
+model_gen XYZ ls j | length j == 3 = basic_genB ls sym gen
   where gen [x] rs_ = let (r,rs) = splitAt 3 rs_ in
           ([ ([([x0],k) | x0 <- [x,x+1]], j!!(k-1) * r!!(k-1)) | k<-[1..3] ], rs)
         gen _ _ = error "XYZ"
-model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen, MajSquareOpenX] = basic_genB (ls++[ly0]) gen
+        sym = [map (,k) $ mapM (\l -> [0..l-1]) ls | k <- [1,2]]
+model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen, MajSquareOpenX] = basic_genB (ls++[ly0]) sym gen
   where ly  = round $ toDouble ly_
         ly0 = (ly-1)//2
         oQ  = boole $ model == MajSquareOpen
@@ -1439,23 +1454,21 @@ model_gen model ls [ly_] | model `elem` [MajSquare, MajSquareOpen, MajSquareOpen
           where (rs,rs') = splitAt (ly-oQ) rs0
         gen [_,_] rs = ([], rs)
         gen _ _ = error "MajSquare"
+        sym = [concat [gg x y | x <- [0..head ls-1]] | y <- [0..ly-2]]
 #else
-model_gen MajChainF ls [j1,j2,k] = basic_genF ls gen
+model_gen MajChainF ls [j1,j2,k] = basic_genF ls [] gen
   where gen [x] (rj:rk:rs) = ([ ([[x],[x+1]], (even x ? j1 $ j2)*rj), ([[x],[x+1],[x+2],[x+3]], k*rk) ], rs)
         gen _ _ = error "MajChainF"
 model_gen MajSquareF  ls   [ly_]     = model_gen MajSquareF ls [ly_,1,0]
 model_gen MajSquareF [lx]  [ly_,q,t] = model_gen MajSquareF [lx,ly] [q,t]
   where ly = round $ toDouble ly_
-model_gen MajSquareF ls@[_,ly] [q,t] = basic_genF ls gen
+model_gen MajSquareF ls@[_,ly] [q,t] = basic_genF ls [] gen
   where gen [x,y] (rq:rt1:rt2:rs) = (take_ [([[x,y],[x+1,y]], t*rt1), ([[x,y],[x,y+1]], t*rt2), ([[x,y],[x,y+1],[x+1,y],[x+1,y+1]], q*rq)], t==0 ? rt1:rt2:rs $ rs)
           where take_ | ly == 1 || (ly == 2 && y > 0) = take 1
                       | otherwise = id
         gen _ _ = error "MajSquareF"
 #endif
 model_gen _ _ _ = error "model_gen"
-
-model_gen_apply_gamma :: Double -> (Ls,ModelGen) -> (Ls,ModelGen)
-model_gen_apply_gamma gamma (ls,gen) = (ls, first (map $ second $ gamma==0 ? (boole . (/=0)) $ (`powF` gamma)) .* gen)
 
 -- [bins (upper bound)] -> [(bin,x)] -> [(bin,xs)]
 generic_histo_ :: [Int] -> [(Int,a)] -> [(Int,[a])]
@@ -1565,8 +1578,10 @@ main = do
       n        = n'RG rg0
       l_1d     = dim == 1 ? Just n $ Nothing
       seed'    = noAlterSeedQ ? hash seed $ hash $ show (seed, model, ln2_ls, couplings, gamma)
-      rands    = toF <$> (not cutDisorder ? id $ \r -> 0.9*r+0.1) <$> randoms seed'
-      rg0      = init'RG ls0 seed' $ init_generic'Ham rands $ model_gen_apply_gamma gamma $ model_gen model ls0 couplings
+      rands    = (gamma==0 ? (boole . (/=0)) $ gamma==1 ? id $ (`powF` gamma))
+              <$> toF <$> (not cutDisorder ? id $ \r -> 0.9*r+0.1) <$> randoms seed'
+    --rands    = [0.0950006,0.0601524,0.825332,0.950187,0.46984,0.66694,0.576358,0.118208,0.244333,0.910827,0.282831,0.352579,0.00942258,0.995955,0.673518,0.518092,0.499011,0.659717,0.753359,0.259385,0.288572,0.477671,0.535261,0.38751,0.0143445,0.0755075,0.779773,0.178781,0.98583,0.0640654,0.517032,0.633931,0.344603,0.478671,0.489838,0.217455,0.192884,0.421494,0.321384,0.803604,0.528763,0.428627,0.283487,0.0156083,0.938993,0.426166,0.960091,0.703756,0.221526,0.239456,0.526605,0.124451,0.573746,0.0539054,0.057216,0.0938908,0.830291,0.867123,0.0989754,0.875655,0.0222428,0.233055,0.655032]
+      rg0      = uncurry (init'RG ls0 seed') $ second (init_generic'Ham rands) $ model_gen model ls0 couplings
       rg       = runRG $ rg0 { diag'RG            = keep_diagQ ? diag'RG rg0 $ Nothing,
                                trash'RG           = Nothing,
                                bifurcation'RG     = bifurcation,
@@ -1592,6 +1607,7 @@ main = do
 --  putStr "max Anderson terms: "; print max_wolff_terms
   putStr   "float type:         "; print type_F
   putStr   "bifurcation:        "; print $ show bifurcation
+  putStr   "symmetries:         "; print $ length $ symmetries'RG rg0
   
   rg `seq` return ()
   
@@ -1606,6 +1622,10 @@ main = do
   putStr "missing stabilizers: "
   print $ n_missing
 --mapM_ print $ map (toLists'GT ls) $ take 6 ordered_stab
+  
+  when detailedQ $ do
+    putStr "extra stabilizers: "
+    print $ extra_stabs'RG rg
   
   assert ("RG length: " ++ show (length $ stab0'RG rg)) (length (stab0'RG rg) == (bosonicQ ? n $ n//2)) $ return ()
   
